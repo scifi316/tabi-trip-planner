@@ -1,0 +1,315 @@
+// Settings screen: account, location sharing, appearance, offline maps, trip, members, data.
+import { state, on, emit, op, api, userById, signOutLocal } from './store.js';
+import { esc, icon, avatar, toast, ago, openSheet } from './ui.js';
+import { deviceSending, syncWatcher, isWatching, requestWake } from './location.js';
+import { planPack, downloadPack, mapCacheInfo, clearMapCache } from './offline.js';
+import { openImport } from './add.js';
+import { meButton, applyTheme } from './main.js';
+import { getMap } from './map.js';
+
+const root = () => document.getElementById('screen-settings');
+const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
+let download = null; // { controller, done, total }
+
+const isShown = () => !root().hidden;
+function maybeRender() {
+  if (!isShown()) return;
+  const a = document.activeElement;
+  if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
+  render();
+}
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations'].forEach((e) => on(e, maybeRender));
+
+const sw = (attr, checked, label) => `<label class="switch"><input type="checkbox" ${attr} ${checked ? 'checked' : ''} aria-label="${esc(label)}"><span></span></label>`;
+const seg = (name, value, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button data-${name}="${v}" aria-pressed="${value === v}">${esc(l)}</button>`).join('')}</div>`;
+
+export function render() {
+  const el = root();
+  const me = state.me || {};
+  const tr = state.trip;
+  const admin = me.isAdmin;
+  const theme = localStorage.getItem('tabi.theme') || 'system';
+  const labels = localStorage.getItem('tabi.labels') || 'both';
+  const invite = tr.joinCode ? `${location.origin}/?join=${tr.joinCode}` : '';
+  const pending = state.outbox.length;
+
+  el.innerHTML = `
+  <div class="page">
+    <header class="page-head">${meButton()}<div class="grow"><h1>Settings</h1>
+      <div class="sub">${state.conn === 'online' ? 'Connected' : state.conn === 'connecting' ? 'Connecting…' : 'Offline'}${pending ? `, ${pending} change${pending > 1 ? 's' : ''} waiting to sync` : ''}</div></div></header>
+
+    <section class="section"><h2>You</h2><div class="card">
+      <div class="row">${avatar(me)}<div class="grow"><div class="label">${esc(me.name)}</div><div class="help">${admin ? 'Trip admin' : 'Member'}</div></div>
+        <button class="btn small" data-rename>Rename</button></div>
+      <div class="row stack"><div class="label">Your colour</div>
+        <div class="colors" style="margin-top:8px">${COLORS.map((c) => `<button class="color-dot" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${me.color === c}"></button>`).join('')}</div></div>
+      <div class="row"><div class="grow label">Password</div><button class="btn small" data-password>Change</button></div>
+      <div class="row"><div class="grow label">Sign out of this device</div><button class="btn small danger" data-signout>Sign out</button></div>
+    </div></section>
+
+    <section class="section"><h2>Location sharing</h2><div class="card">
+      <div class="row"><div class="grow"><div class="label">Share my location with the group</div>
+        <div class="help">${me.shareLocation ? 'Friends can see where you are.' : 'Off. Nobody can see where you are.'}</div></div>
+        ${sw('data-share', me.shareLocation, 'Share my location')}</div>
+      ${me.shareLocation ? `
+      <div class="row"><div class="grow"><div class="label">Send from this device</div>
+        <div class="help">${deviceSending() ? (isWatching() ? 'Sending while Tabi is open.' : 'Will send while Tabi is open.') : 'Off here. Use this if another phone is your main device.'}</div></div>
+        ${sw('data-device', deviceSending(), 'Send from this device')}</div>
+      <div class="row"><div class="grow"><div class="label">Keep screen on</div>
+        <div class="help">Stops the phone sleeping while Tabi is open, so updates keep flowing.</div></div>
+        ${sw('data-wake', localStorage.getItem('tabi.wake') === 'on', 'Keep screen on')}</div>` : ''}
+      <div class="row stack">
+        <div class="label">Share even when Tabi is closed</div>
+        <div class="help">Browsers stop location when a web app is in the background. For always-on sharing like Find My, install the free OwnTracks app (iOS and Android) and point it at Tabi.</div>
+        <button class="btn small" data-owntracks style="margin-top:10px;align-self:flex-start">Set up OwnTracks</button>
+      </div>
+    </div></section>
+
+    <section class="section"><h2>Appearance</h2><div class="card">
+      <div class="row stack"><div class="label" style="margin-bottom:8px">Theme</div>${seg('themepick', theme, [['system', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']])}</div>
+      <div class="row stack"><div class="label" style="margin-bottom:8px">Map labels</div>${seg('labels', labels, [['both', 'Both'], ['en', 'English'], ['ja', '日本語']])}</div>
+    </div></section>
+
+    <section class="section"><h2>Offline maps</h2><div class="card">
+      <div class="row stack"><div class="help" data-cache-info>Checking saved maps…</div>
+        ${download ? `<div class="progress" style="margin-top:10px"><div style="width:${download.total ? (download.done / download.total) * 100 : 0}%"></div></div>
+          <div class="help num" style="margin-top:6px">${download.done} of ${download.total} files</div>` : ''}
+      </div>
+      <div class="row" style="flex-wrap:wrap;gap:8px">
+        ${download ? `<button class="btn small" data-cancel-dl>Stop download</button>` : `
+        <button class="btn small primary" data-dl="stops">${icon('download')}Save maps around all places</button>
+        <button class="btn small" data-dl="view">${icon('download')}Save this map area</button>
+        <button class="btn small danger" data-clear-maps>Clear</button>`}
+      </div>
+    </div></section>
+
+    <section class="section"><h2>Trip</h2><div class="card">
+      ${admin ? `
+      <div class="row stack">
+        <label class="field"><span>Trip name</span><input class="input" data-trip="name" value="${esc(tr.name || '')}"></label>
+        <div class="inline-fields">
+          <label class="field"><span>First day</span><input class="input" type="date" data-trip="start" value="${esc(tr.start || '')}"></label>
+          <label class="field"><span>Last day</span><input class="input" type="date" data-trip="end" value="${esc(tr.end || '')}"></label>
+        </div>
+      </div>` : `<div class="row"><div class="grow"><div class="label">${esc(tr.name)}</div><div class="help">${tr.start ? `${esc(tr.start)} to ${esc(tr.end || '?')}` : 'No dates set yet'}. Only admins can change trip details.</div></div></div>`}
+      <div class="row stack"><div class="label">Invite friends</div>
+        <div class="help" style="margin:2px 0 8px">Anyone with this link can join the trip.</div>
+        <div class="code">${esc(invite)}</div>
+        <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+          <button class="btn small primary" data-share-invite>${icon('share')}Share link</button>
+          <button class="btn small" data-copy="${esc(invite)}">${icon('copy')}Copy</button>
+          ${admin ? `<button class="btn small" data-newcode>New link</button>` : ''}
+        </div></div>
+      <div class="row stack"><div class="label">Vetoes</div><div class="help" style="margin:2px 0 8px">What happens when someone vetoes a place.</div>
+        ${admin ? seg('veto', tr.vetoRule, [['single', 'One veto removes it'], ['majority', 'Majority'], ['off', 'Counts as a no']]) : `<div class="help">${({ single: 'One veto removes a place.', majority: 'A place is removed when over half the group vetoes it.', off: 'A veto counts as a no vote.' })[tr.vetoRule]}</div>`}</div>
+      <div class="row"><div class="grow"><div class="label">Auto-confirm</div><div class="help">Confirm a place automatically when this many people want to go. 0 turns it off.</div></div>
+        ${admin ? `<input class="input num" type="number" min="0" max="50" data-trip="autoConfirm" value="${tr.autoConfirm || 0}" style="width:76px">` : `<b class="num">${tr.autoConfirm || 'Off'}</b>`}</div>
+    </div></section>
+
+    <section class="section"><h2>Group</h2><div class="card">
+      ${state.users.map((u) => `
+        <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
+          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}</div></div>
+          ${u.isAdmin ? '<span class="tag">Admin</span>' : ''}
+          ${admin && u.id !== me.id ? `<button class="btn small" data-member="${u.id}">Manage</button>` : ''}
+        </div>`).join('')}
+    </div></section>
+
+    <section class="section"><h2>Places data</h2><div class="card">
+      <div class="row"><div class="grow"><div class="label">Import places</div><div class="help">Google My Maps, links, KML, GeoJSON, GPX, CSV</div></div>
+        <button class="btn small" data-import>Import</button></div>
+      <div class="row"><div class="grow"><div class="label">Export a backup</div><div class="help">KML opens in Google My Maps and Google Earth.</div></div>
+        <button class="btn small" data-export="kml">KML</button><button class="btn small" data-export="json">JSON</button></div>
+    </div></section>
+
+    <section class="section"><h2>Recent activity</h2><div class="card">
+      ${state.activity.slice(0, 25).map((a) => `<div class="row activity">${avatar(userById(a.userId))}<div class="grow">${esc(a.text)}<time>${ago(a.ts)}</time></div></div>`).join('') || '<div class="row help">Nothing yet.</div>'}
+    </div></section>
+
+    <p class="faint" style="font-size:12px;margin:0 20px 10px">Tabi 1.0. Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
+  </div>`;
+
+  bind(el);
+  mapCacheInfo().then((i) => {
+    const t = el.querySelector('[data-cache-info]');
+    if (t) t.textContent = i.entries
+      ? `${i.entries.toLocaleString()} map files saved on this device (${(i.usage / 1048576).toFixed(0)} MB used by Tabi). Saved areas work without a connection.`
+      : 'No maps saved yet. Save them on Wi-Fi before you fly. Areas you browse are also kept automatically.';
+  }).catch(() => {});
+}
+
+function bind(el) {
+  const me = state.me;
+  el.querySelectorAll('[data-color]').forEach((b) => b.onclick = () => op('user.update', { color: b.dataset.color }));
+  el.querySelector('[data-rename]').onclick = () => promptSheet('Your name', me.name, async (v) => {
+    const r = await op('user.update', { name: v });
+    if (r.ok === false) throw new Error(r.error);
+  });
+  el.querySelector('[data-password]').onclick = passwordSheet;
+  el.querySelector('[data-signout]').onclick = async () => {
+    try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
+    signOutLocal();
+    location.href = '/';
+  };
+
+  el.querySelector('[data-share]').onchange = async (e) => {
+    const on = e.target.checked;
+    const r = await op('loc.share', { on });
+    if (r.ok === false) { toast(r.error); e.target.checked = !on; return; }
+    if (on) toast('Sharing on. Your location updates while Tabi is open.');
+  };
+  el.querySelector('[data-device]')?.addEventListener('change', (e) => {
+    localStorage.setItem('tabi.gps.device', e.target.checked ? 'on' : 'off');
+    syncWatcher(); render();
+  });
+  el.querySelector('[data-wake]')?.addEventListener('change', (e) => {
+    localStorage.setItem('tabi.wake', e.target.checked ? 'on' : 'off');
+    if (e.target.checked) requestWake();
+  });
+  el.querySelector('[data-owntracks]').onclick = ownTracksSheet;
+
+  el.querySelectorAll('[data-themepick]').forEach((b) => b.onclick = () => { localStorage.setItem('tabi.theme', b.dataset.themepick); applyTheme(); render(); });
+  el.querySelectorAll('[data-labels]').forEach((b) => b.onclick = () => { localStorage.setItem('tabi.labels', b.dataset.labels); emit('labels'); render(); });
+
+  el.querySelectorAll('[data-dl]').forEach((b) => b.onclick = () => startDownload(b.dataset.dl));
+  el.querySelector('[data-cancel-dl]')?.addEventListener('click', () => download?.controller.abort());
+  el.querySelector('[data-clear-maps]')?.addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    if (!b.dataset.armed) { b.dataset.armed = 1; b.textContent = 'Tap again to clear'; return; }
+    await clearMapCache(); toast('Saved maps cleared'); render();
+  });
+
+  el.querySelectorAll('[data-trip]').forEach((i) => i.onchange = async () => {
+    const r = await op('trip.update', { [i.dataset.trip]: i.value });
+    if (r.ok === false) toast(r.error); else toast('Trip updated');
+  });
+  el.querySelectorAll('[data-veto]').forEach((b) => b.onclick = () => op('trip.update', { vetoRule: b.dataset.veto }));
+  el.querySelector('[data-newcode]')?.addEventListener('click', async () => { await op('trip.newCode'); toast('New invite link made. The old one no longer works.'); });
+  el.querySelectorAll('[data-copy]').forEach((b) => b.onclick = () => copy(b.dataset.copy));
+  el.querySelector('[data-share-invite]').onclick = async () => {
+    const url = `${location.origin}/?join=${state.trip.joinCode}`;
+    if (navigator.share) { try { await navigator.share({ title: state.trip.name, text: `Join our trip planner for ${state.trip.name}`, url }); } catch { /* cancelled */ } }
+    else copy(url);
+  };
+  el.querySelectorAll('[data-member]').forEach((b) => b.onclick = () => memberSheet(+b.dataset.member));
+  el.querySelector('[data-import]').onclick = () => openImport('mymaps');
+  el.querySelectorAll('[data-export]').forEach((b) => b.onclick = async () => {
+    try {
+      const res = await api(`/api/export?format=${b.dataset.export}`, { raw: true });
+      const blob = await res.blob();
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `tabi-trip.${b.dataset.export}` });
+      a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    } catch (e) { toast(e.message); }
+  });
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast('Copied'); }
+  catch { toast('Copy failed. Press and hold the text to copy it.'); }
+}
+
+async function startDownload(kind) {
+  const controller = new AbortController();
+  download = { controller, done: 0, total: 0 };
+  render();
+  try {
+    const map = getMap();
+    const b = map?.getBounds();
+    const plan = await planPack(kind, b ? { bounds: { w: b.getWest(), e: b.getEast(), s: b.getSouth(), n: b.getNorth() }, zoom: map.getZoom() } : {});
+    let lastPaint = 0;
+    const res = await downloadPack(plan, {
+      limit: state.config.offlineTileLimit || 3000,
+      signal: controller.signal,
+      onProgress: (d, t) => {
+        download.done = d; download.total = t;
+        if (Date.now() - lastPaint > 250) { lastPaint = Date.now(); maybeRender(); }
+      },
+    });
+    toast(controller.signal.aborted ? 'Download stopped. What finished is saved.'
+      : res.remaining ? `Saved ${res.downloaded} files. ${res.remaining} more remain: run it again later to continue.`
+        : res.downloaded ? `Saved ${res.downloaded} map files for offline use` : 'Everything here was already saved', { ms: 5000 });
+  } catch (e) {
+    toast(`Map download failed: ${e.message}`);
+  } finally {
+    download = null;
+    if (isShown()) render();
+  }
+}
+
+function promptSheet(title, value, save) {
+  const s = openSheet({
+    title,
+    body: `<input class="input" data-v value="${esc(value || '')}" maxlength="24" autofocus><p class="err" data-err hidden></p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-save>Save</button>`,
+  });
+  s.el.querySelector('[data-save]').onclick = async () => {
+    const v = s.el.querySelector('[data-v]').value.trim();
+    if (!v) return;
+    try { await save(v); s.close(); } catch (e) { const er = s.el.querySelector('[data-err]'); er.hidden = false; er.textContent = e.message; }
+  };
+}
+
+function passwordSheet() {
+  const s = openSheet({
+    title: 'Change password',
+    body: `<label class="field"><span>Current password</span><input class="input" type="password" data-cur autocomplete="current-password" autofocus></label>
+      <label class="field"><span>New password</span><input class="input" type="password" data-new autocomplete="new-password"></label><p class="err" data-err hidden></p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn primary" data-save>Change password</button>`,
+  });
+  s.el.querySelector('[data-save]').onclick = async () => {
+    try {
+      await api('/api/password', { method: 'POST', body: { current: s.el.querySelector('[data-cur]').value, next: s.el.querySelector('[data-new]').value } });
+      s.close(); toast('Password changed');
+    } catch (e) { const er = s.el.querySelector('[data-err]'); er.hidden = false; er.textContent = e.message; }
+  };
+}
+
+function ownTracksSheet() {
+  const me = state.me;
+  const url = `${location.origin}/api/owntracks`;
+  const s = openSheet({
+    title: 'Always-on sharing with OwnTracks',
+    sub: 'Free, open source, and keeps sharing when your phone is locked.',
+    body: `
+      <div class="hint"><ol>
+        <li>Install <b>OwnTracks</b> from the App Store or Google Play.</li>
+        <li>Open its settings and set the mode to <b>HTTP</b>.</li>
+        <li>Enter the URL, user ID and password below. Leave Device ID as anything, like “phone”.</li>
+        <li>Choose <b>Significant</b> or <b>Move</b> monitoring. Significant saves battery.</li>
+        <li>Make sure “Share my location with the group” is on in Tabi.</li>
+      </ol></div>
+      <label class="field"><span>URL</span><div class="code" data-copy-v>${esc(url)}</div></label>
+      <label class="field"><span>User ID / username</span><div class="code" data-copy-v>${esc(me.name)}</div></label>
+      <label class="field"><span>Password (token)</span><div class="code" data-copy-v data-tok>${esc(me.owntracksToken || '')}</div></label>
+      <p class="hint">Tap a value to copy it. Friends who share will also show up inside OwnTracks. The token is separate from your Tabi password; make a new one if it leaks.</p>
+      <button class="btn small" data-reset>Make a new token</button>`,
+  });
+  s.el.querySelectorAll('[data-copy-v]').forEach((c) => c.onclick = () => copy(c.textContent.trim()));
+  s.el.querySelector('[data-reset]').onclick = async () => {
+    const r = await op('user.owntracksReset');
+    if (r.token) { state.me.owntracksToken = r.token; s.el.querySelector('[data-tok]').textContent = r.token; toast('New token made. Update it in OwnTracks.'); }
+    else toast(r.error || 'Could not make a new token while offline');
+  };
+}
+
+function memberSheet(id) {
+  const u = userById(id);
+  if (!u) return;
+  const s = openSheet({
+    title: u.name,
+    body: `<div class="card" style="margin:0">
+      <div class="row"><div class="grow"><div class="label">Trip admin</div><div class="help">Admins can change trip details, invite links and members.</div></div>
+        ${sw('data-admin', u.isAdmin, 'Trip admin')}</div>
+      <div class="row"><div class="grow"><div class="label">Remove from trip</div><div class="help">They are signed out and their votes are removed. Places they added stay.</div></div>
+        <button class="btn small danger" data-remove>Remove</button></div></div>`,
+  });
+  s.el.querySelector('[data-admin]').onchange = async (e) => { const r = await op('user.admin', { id, on: e.target.checked }); if (r.ok === false) toast(r.error); };
+  const rm = s.el.querySelector('[data-remove]');
+  rm.onclick = async () => {
+    if (!rm.dataset.armed) { rm.dataset.armed = 1; rm.textContent = 'Tap again to remove'; return; }
+    const r = await op('user.remove', { id });
+    if (r.ok === false) toast(r.error); else { toast(`${u.name} removed`); s.close(); }
+  };
+}
+
+export function showSettings() { render(); }

@@ -1,0 +1,21 @@
+{
+  "name": "tabi",
+  "version": "1.0.0",
+  "description": "Self-hosted group itinerary + live location app for a Japan trip",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node --env-file-if-exists=.env --watch --disable-warning=ExperimentalWarning server/index.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "maplibre-gl": "^6.18.0",
+    "ws": "^8.23.0"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
