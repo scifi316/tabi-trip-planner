@@ -1,3 +1,4 @@
+# Single host (no failover). For the Fly.io + home-server pair, see deploy/ and docs/HOSTING.md.
 services:
   tabi:
     build: .
@@ -7,19 +8,4 @@ services:
       - "8080:8080"
     volumes:
       - ./data:/data
-    environment:
-      - TRUST_PROXY=true          # set when running behind Caddy / Cloudflare Tunnel / Tailscale
-      # - MAP_STYLE_LIGHT=https://tiles.openfreemap.org/styles/liberty
-      # - MAP_STYLE_DARK=https://tiles.openfreemap.org/styles/dark
-
-  # Optional: free HTTPS with no port forwarding, via a Cloudflare Tunnel.
-  # Create a tunnel in the Cloudflare dashboard, point it at http://tabi:8080, paste the token below,
-  # then run:  docker compose --profile tunnel up -d
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: ["tunnel"]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=paste-your-tunnel-token-here
-    depends_on: [tabi]
+    env_file: .env          # copy .env.example to .env first

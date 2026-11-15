@@ -3,12 +3,15 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
+export const DB_FILE = 'tabi.db';
+
 export function openDb(dataDir) {
   fs.mkdirSync(dataDir, { recursive: true });
-  const db = new DatabaseSync(path.join(dataDir, 'tabi.db'));
+  const db = new DatabaseSync(path.join(dataDir, DB_FILE));
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 5000;
 
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -83,6 +86,83 @@ export function openDb(dataDir) {
       value TEXT NOT NULL,
       ts INTEGER NOT NULL
     );
+
+    -- Sub-groups: the main group splitting up for a day or a few days
+    CREATE TABLE IF NOT EXISTS subgroups (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      start_day TEXT,
+      end_day TEXT,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS subgroup_members (
+      subgroup_id TEXT NOT NULL REFERENCES subgroups(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (subgroup_id, user_id)
+    );
+
+    -- Money: expenses and settle-up payments share one table.
+    -- Amounts are integers in the currency's minor unit (yen have none, dollars have cents).
+    CREATE TABLE IF NOT EXISTS expenses (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'expense',       -- expense | payment
+      title TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      currency TEXT NOT NULL,
+      rate REAL NOT NULL DEFAULT 1,               -- trip currency per 1 unit of currency
+      category TEXT,
+      paid_by INTEGER NOT NULL,
+      date TEXT,
+      place_id TEXT,
+      group_id TEXT,
+      visibility TEXT NOT NULL DEFAULT 'group',   -- group | private
+      split_mode TEXT NOT NULL DEFAULT 'equal',   -- equal | exact | shares | items
+      notes TEXT,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_by INTEGER,
+      updated_at INTEGER NOT NULL,
+      deleted_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS expense_shares (
+      expense_id TEXT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL,
+      amount INTEGER NOT NULL,
+      weight REAL,
+      PRIMARY KEY (expense_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS expense_items (
+      expense_id TEXT NOT NULL REFERENCES expenses(id) ON DELETE CASCADE,
+      idx INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      user_ids TEXT NOT NULL DEFAULT '[]',
+      PRIMARY KEY (expense_id, idx)
+    );
+    -- Receipt photos and screenshots. Bytes live in the blob store; this is the index.
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY,
+      expense_id TEXT,
+      blob_key TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      ocr_text TEXT,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS attachments_expense ON attachments(expense_id);
   `);
+
+  // Column migrations for databases created by earlier versions
+  const cols = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name));
+  const add = (t, c, def) => { if (!cols(t).has(c)) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`); };
+  add('places', 'removed_at', 'INTEGER');
+  add('places', 'removed_by', 'INTEGER');
+  add('places', 'group_id', 'TEXT');
+  add('sessions', 'user_agent', 'TEXT');
   return db;
 }

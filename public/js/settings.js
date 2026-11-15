@@ -5,6 +5,8 @@ import { deviceSending, syncWatcher, isWatching, requestWake } from './location.
 import { planPack, downloadPack, mapCacheInfo, clearMapCache } from './offline.js';
 import { openImport } from './add.js';
 import { meButton, applyTheme } from './main.js';
+import { resetTours, maybeStartTour } from './tour.js';
+import { openGroups } from './groups.js';
 import { getMap } from './map.js';
 
 const root = () => document.getElementById('screen-settings');
@@ -30,7 +32,8 @@ export function render() {
   const admin = me.isAdmin;
   const theme = localStorage.getItem('tabi.theme') || 'system';
   const labels = localStorage.getItem('tabi.labels') || 'both';
-  const invite = tr.joinCode ? `${location.origin}/?join=${tr.joinCode}` : '';
+  const gate = state.config.gate ? `gate=${state.config.gate}&` : '';
+  const invite = tr.joinCode ? `${location.origin}/?${gate}join=${tr.joinCode}` : '';
   const pending = state.outbox.length;
 
   el.innerHTML = `
@@ -44,10 +47,11 @@ export function render() {
       <div class="row stack"><div class="label">Your colour</div>
         <div class="colors" style="margin-top:8px">${COLORS.map((c) => `<button class="color-dot" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${me.color === c}"></button>`).join('')}</div></div>
       <div class="row"><div class="grow label">Password</div><button class="btn small" data-password>Change</button></div>
+      <div class="row"><div class="grow"><div class="label">Signed-in devices</div><div class="help">See where you’re signed in, and sign out the others.</div></div><button class="btn small" data-devices>Devices</button></div>
       <div class="row"><div class="grow label">Sign out of this device</div><button class="btn small danger" data-signout>Sign out</button></div>
     </div></section>
 
-    <section class="section"><h2>Location sharing</h2><div class="card">
+    <section class="section" data-section="location"><h2>Location sharing</h2><div class="card">
       <div class="row"><div class="grow"><div class="label">Share my location with the group</div>
         <div class="help">${me.shareLocation ? 'Friends can see where you are.' : 'Off. Nobody can see where you are.'}</div></div>
         ${sw('data-share', me.shareLocation, 'Share my location')}</div>
@@ -68,9 +72,10 @@ export function render() {
     <section class="section"><h2>Appearance</h2><div class="card">
       <div class="row stack"><div class="label" style="margin-bottom:8px">Theme</div>${seg('themepick', theme, [['system', 'Match phone'], ['light', 'Light'], ['dark', 'Dark']])}</div>
       <div class="row stack"><div class="label" style="margin-bottom:8px">Map labels</div>${seg('labels', labels, [['both', 'Both'], ['en', 'English'], ['ja', '日本語']])}</div>
+      <div class="row"><div class="grow"><div class="label">Tips</div><div class="help">Replay the short tours of each screen.</div></div><button class="btn small" data-tips>Show tips again</button></div>
     </div></section>
 
-    <section class="section"><h2>Offline maps</h2><div class="card">
+    <section class="section" data-section="offline"><h2>Offline maps</h2><div class="card">
       <div class="row stack"><div class="help" data-cache-info>Checking saved maps…</div>
         ${download ? `<div class="progress" style="margin-top:10px"><div style="width:${download.total ? (download.done / download.total) * 100 : 0}%"></div></div>
           <div class="help num" style="margin-top:6px">${download.done} of ${download.total} files</div>` : ''}
@@ -104,9 +109,13 @@ export function render() {
         ${admin ? seg('veto', tr.vetoRule, [['single', 'One veto removes it'], ['majority', 'Majority'], ['off', 'Counts as a no']]) : `<div class="help">${({ single: 'One veto removes a place.', majority: 'A place is removed when over half the group vetoes it.', off: 'A veto counts as a no vote.' })[tr.vetoRule]}</div>`}</div>
       <div class="row"><div class="grow"><div class="label">Auto-confirm</div><div class="help">Confirm a place automatically when this many people want to go. 0 turns it off.</div></div>
         ${admin ? `<input class="input num" type="number" min="0" max="50" data-trip="autoConfirm" value="${tr.autoConfirm || 0}" style="width:76px">` : `<b class="num">${tr.autoConfirm || 'Off'}</b>`}</div>
+      <div class="row"><div class="grow"><div class="label">Trip currency</div><div class="help">Balances are added up in this currency. It’s fixed once expenses exist.</div></div>
+        ${admin && !state.expenses.size ? `<select class="input" data-trip="currency" style="width:96px">${(state.config.currencies || ['JPY']).map((c) => `<option ${c === tr.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>` : `<b>${esc(tr.currency || 'JPY')}</b>`}</div>
     </div></section>
 
     <section class="section"><h2>Group</h2><div class="card">
+      <div class="row"><div class="grow"><div class="label">Subgroups</div><div class="help">${state.subgroups.length ? `${state.subgroups.length} subgroup${state.subgroups.length > 1 ? 's' : ''}` : 'For when the group splits up for a day or two.'}</div></div>
+        <button class="btn small" data-subgroups>${icon('users')}Manage</button></div>
       ${state.users.map((u) => `
         <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
           <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}</div></div>
@@ -120,6 +129,8 @@ export function render() {
         <button class="btn small" data-import>Import</button></div>
       <div class="row"><div class="grow"><div class="label">Export a backup</div><div class="help">KML opens in Google My Maps and Google Earth.</div></div>
         <button class="btn small" data-export="kml">KML</button><button class="btn small" data-export="json">JSON</button></div>
+      <div class="row"><div class="grow"><div class="label">Export expenses</div><div class="help">Every expense you can see, as a spreadsheet.</div></div>
+        <button class="btn small" data-export="expenses">CSV</button></div>
     </div></section>
 
     <section class="section"><h2>Recent activity</h2><div class="card">
@@ -193,11 +204,14 @@ function bind(el) {
   };
   el.querySelectorAll('[data-member]').forEach((b) => b.onclick = () => memberSheet(+b.dataset.member));
   el.querySelector('[data-import]').onclick = () => openImport('mymaps');
+  el.querySelector('[data-subgroups]').onclick = () => openGroups();
+  el.querySelector('[data-tips]').onclick = () => { resetTours(); toast('Tips will show again on each screen.'); maybeStartTour('settings', { delay: 200, force: true }); };
+  el.querySelector('[data-devices]').onclick = devicesSheet;
   el.querySelectorAll('[data-export]').forEach((b) => b.onclick = async () => {
     try {
       const res = await api(`/api/export?format=${b.dataset.export}`, { raw: true });
       const blob = await res.blob();
-      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: `tabi-trip.${b.dataset.export}` });
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: b.dataset.export === 'expenses' ? 'tabi-expenses.csv' : `tabi-trip.${b.dataset.export}` });
       a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     } catch (e) { toast(e.message); }
   });
@@ -266,7 +280,7 @@ function passwordSheet() {
 
 function ownTracksSheet() {
   const me = state.me;
-  const url = `${location.origin}/api/owntracks`;
+  const url = `${location.origin}/api/owntracks${state.config.gate ? `?gate=${state.config.gate}` : ''}`;
   const s = openSheet({
     title: 'Always-on sharing with OwnTracks',
     sub: 'Free, open source, and keeps sharing when your phone is locked.',
@@ -313,3 +327,19 @@ function memberSheet(id) {
 }
 
 export function showSettings() { render(); }
+
+async function devicesSheet() {
+  const s = openSheet({ title: 'Signed-in devices', body: '<p class="hint">Loading…</p>' });
+  try {
+    const { sessions } = await api('/api/sessions');
+    s.body.innerHTML = `<div class="card" style="margin:0;border:1px solid var(--line)">${sessions.map((x) => `
+      <div class="row"><div class="grow"><div class="label">${esc(x.device)}${x.current ? ' <span class="tag">This device</span>' : ''}</div>
+      <div class="help">Signed in ${ago(x.createdAt)}, last used ${ago(x.lastSeen)}</div></div></div>`).join('')}</div>
+      ${sessions.length > 1 ? `<button class="btn danger block" data-others style="margin-top:14px">Sign out all other devices</button>` : ''}`;
+    s.body.querySelector('[data-others]')?.addEventListener('click', async () => {
+      await api('/api/logout-others', { method: 'POST' });
+      toast('Signed out everywhere else');
+      s.close();
+    });
+  } catch (e) { s.body.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}

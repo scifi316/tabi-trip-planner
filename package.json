@@ -1,16 +1,22 @@
 {
   "name": "tabi",
-  "version": "1.0.0",
-  "description": "Self-hosted group itinerary + live location app for a Japan trip",
+  "version": "1.1.0",
+  "description": "Self-hosted group trip planner PWA for Japan: shared map, itinerary voting, subgroups, expenses with receipt OCR, live locations, HA hosting",
   "main": "server/index.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --env-file-if-exists=.env --watch --disable-warning=ExperimentalWarning server/index.js"
+    "dev": "node --env-file-if-exists=.env --watch --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --test \"test/*.test.mjs\"",
+    "test:ha": "bash test/ha-failover.sh"
   },
   "license": "MIT",
   "dependencies": {
+    "@tesseract.js-data/eng": "^1.0.0",
+    "@tesseract.js-data/jpn": "^1.0.0",
+    "aws4fetch": "^1.0.20",
     "fflate": "^0.8.3",
     "maplibre-gl": "^6.18.0",
+    "tesseract.js": "^7.0.0",
     "ws": "^8.23.0"
   },
   "type": "module",

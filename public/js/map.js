@@ -1,6 +1,7 @@
 // Map screen: MapLibre map, place + friend markers, search, controls, and the day "line strip".
 import * as maplibregl from '/vendor/maplibre-gl/maplibre-gl.mjs';
-import { state, on, emit, api, userById, dayStops, defaultDay, tripDays, effectiveStatus, today } from './store.js';
+import { state, on, emit, api, userById, groupById, groupsOn, myGroupOn, dayStops, defaultDay, tripDays, effectiveStatus, today } from './store.js';
+import { openGroups, groupWhere } from './groups.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
@@ -12,10 +13,16 @@ const placeMarkers = new Map(); // id -> { marker, el, key }
 const friendMarkers = new Map();
 let meMarker = null;
 let stripDay = null;
+let stripGroup; // undefined = follow my subgroup for the day; null = everyone; id = a subgroup
+function currentGroup() {
+  const active = groupsOn(stripDay);
+  if (stripGroup === undefined) return myGroupOn(stripDay)?.id ?? null;
+  return active.some((g) => g.id === stripGroup) ? stripGroup : null;
+}
 const JAPAN = [[122.9, 24.0], [146.0, 45.6]];
 
 const LAYER_KEY = 'tabi.layers';
-let visible = JSON.parse(localStorage.getItem(LAYER_KEY) || 'null') || { confirmed: true, maybe: true, suggested: true, visited: true, missed: true, skipped: true, vetoed: false, onlyDay: false };
+let visible = { confirmed: true, maybe: true, suggested: true, visited: true, missed: true, skipped: true, vetoed: false, removed: false, onlyDay: false, ...JSON.parse(localStorage.getItem(LAYER_KEY) || '{}') };
 
 export function themeStyleUrl() {
   const dark = document.documentElement.dataset.theme === 'dark';
@@ -94,7 +101,19 @@ export function initMap() {
     setTimeout(() => openPlace(id), 50);
   });
   on('fit-all', fitAll);
-  on('strip-day', (d) => { stripDay = d; renderStrip(); renderPlaces(); });
+  on('strip-day', (d) => { if (d !== stripDay) stripGroup = undefined; stripDay = d; renderStrip(); renderPlaces(); renderFriends(); });
+  on('subgroups', () => { renderStrip(); renderPlaces(); renderFriends(); });
+  on('focus-group', (id) => {
+    const g = groupById(id);
+    if (!g) return;
+    if (groupsOn(stripDay).includes(g)) { stripGroup = id; renderStrip(); renderPlaces(); }
+    const { locs } = groupWhere(g);
+    if (!locs.length) return toast(`Nobody in ${g.name} is sharing their location right now.`);
+    if (locs.length === 1) return map.flyTo({ center: [locs[0].lng, locs[0].lat], zoom: 15, padding: padding() });
+    const b = new maplibregl.LngLatBounds();
+    locs.forEach((l) => b.extend([l.lng, l.lat]));
+    map.fitBounds(b, { padding: padding(), maxZoom: 16 });
+  });
   on('labels', () => { usingFallback = false; map.setStyle(styleUrl, { diff: false }); });
 
   let firstFit = true;
@@ -130,6 +149,7 @@ function fitAll({ animate = true } = {}) {
 // ---------- places ----------
 function isVisible(p) {
   const eff = effectiveStatus(p);
+  if (eff === 'removed') return !!(visible.removed && state.me?.isAdmin);
   if (!visible[eff]) return false;
   if (visible.onlyDay && p.day !== stripDay) return false;
   return true;
@@ -137,7 +157,7 @@ function isVisible(p) {
 
 function renderPlaces() {
   if (!map) return;
-  const stops = stripDay ? dayStops(stripDay) : [];
+  const stops = stripDay ? dayStops(stripDay, currentGroup()) : [];
   const stationNo = new Map(stops.map((s, i) => [s.place.id, i + 1]));
   const nextId = stops.find((s) => s.state === 'todo')?.place.id;
   const sel = selectedPlaceId();
@@ -149,7 +169,8 @@ function renderPlaces() {
     const eff = effectiveStatus(p);
     const n = stationNo.get(p.id);
     const stopState = n ? stops[n - 1].state : null;
-    const key = [n, stopState, eff, p.id === sel, p.id === nextId, p.lat, p.lng, p.name].join('|');
+    const ring = p.groupId ? groupById(p.groupId)?.color : null;
+    const key = [n, stopState, eff, p.id === sel, p.id === nextId, p.lat, p.lng, p.name, ring].join('|');
     let m = placeMarkers.get(p.id);
     if (m && m.key === key) continue;
     if (!m) {
@@ -170,6 +191,7 @@ function renderPlaces() {
       el.dataset.state = p.id === nextId ? 'next' : stopState === 'todo' ? '' : stopState;
       el.textContent = n;
       el.style.zIndex = 3;
+      if (ring) el.style.setProperty('--ring', ring); else el.style.removeProperty('--ring');
     } else {
       el.className = `place-dot ${p.id === sel ? 'selected' : ''}`;
       el.dataset.status = eff;
@@ -187,6 +209,11 @@ function renderFriends() {
   const row = $('#friend-row');
   const chips = [];
   const seen = new Set();
+  const dayGroups = groupsOn(stripDay || today());
+  const groupOf = (id) => dayGroups.find((g) => g.memberIds.includes(+id));
+  for (const g of dayGroups) {
+    chips.push(`<button class="friend-chip group-chip" data-group="${g.id}" style="--g:${esc(g.color)}" aria-pressed="${currentGroup() === g.id}"><span class="group-dot"></span><span>${esc(g.name)}</span><span class="age num">${g.memberIds.length}</span></button>`);
+  }
   for (const [uid, loc] of Object.entries(state.locations)) {
     const u = userById(uid);
     if (!u || u.id === state.me?.id) continue;
@@ -202,11 +229,15 @@ function renderFriends() {
     }
     fm.marker.setLngLat([loc.lng, loc.lat]);
     fm.el.classList.toggle('stale', stale);
-    fm.el.innerHTML = `<div class="bubble" style="background:${esc(u.color)}">${esc(initials(u.name))}</div><div class="tail"></div><div class="label">${esc(u.name)}${stale ? ` <span class="faint">${ago(loc.ts)}</span>` : ''}</div>`;
+    const ug = groupOf(u.id);
+    fm.el.innerHTML = `<div class="bubble" style="background:${esc(u.color)}${ug ? `;border-color:${esc(ug.color)}` : ''}">${esc(initials(u.name))}</div><div class="tail"></div><div class="label">${esc(u.name)}${stale ? ` <span class="faint">${ago(loc.ts)}</span>` : ''}</div>`;
     chips.push(`<button class="friend-chip ${stale ? 'stale' : ''}" data-friend="${u.id}">${avatar(u)}<span>${esc(u.name)}</span><span class="age">${ago(loc.ts)}</span></button>`);
   }
   for (const [id, fm] of friendMarkers) if (!seen.has(id)) { fm.marker.remove(); friendMarkers.delete(id); }
+  chips.push(`<button class="friend-chip" data-groups aria-label="Subgroups">${icon('users', 'small')}<span>${dayGroups.length ? 'Groups' : 'Split up'}</span></button>`);
   row.innerHTML = chips.join('');
+  row.querySelector('[data-groups]').onclick = () => openGroups();
+  row.querySelectorAll('[data-group]').forEach((b) => b.onclick = () => emit('focus-group', b.dataset.group));
   row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => {
     const loc = state.locations[b.dataset.friend];
     if (loc) map.flyTo({ center: [loc.lng, loc.lat], zoom: Math.max(map.getZoom(), 15), duration: 700 });
@@ -246,7 +277,10 @@ export function renderStrip() {
   }
   if (!stripDay || !days.includes(stripDay)) stripDay = defaultDay();
   const i = days.indexOf(stripDay);
-  const stops = dayStops(stripDay);
+  const gid = currentGroup();
+  const grp = gid ? groupById(gid) : null;
+  const dayGroups = groupsOn(stripDay);
+  const stops = dayStops(stripDay, gid);
   const t = today();
   const left = stops.filter((s) => s.state === 'todo').length;
   const done = stops.filter((s) => s.state === 'visited').length;
@@ -263,7 +297,8 @@ export function renderStrip() {
   el.innerHTML = `
     <div class="strip-head">
       <button class="icon-btn small" data-prev aria-label="Previous day" ${i <= 0 ? 'disabled' : ''}>${icon('chevron-left')}</button>
-      <button class="strip-day" data-itin aria-label="Open this day in the itinerary"><b>${esc(label)}</b><span>Day ${dayNo} of ${days.length}</span></button>
+      <button class="strip-day" data-itin aria-label="Open this day in the itinerary"><b>${esc(label)}</b><span>${dayGroups.length ? `Day ${dayNo}` : `Day ${dayNo} of ${days.length}`}</span></button>
+      ${dayGroups.length ? `<button class="strip-group" data-pick-group style="--g:${esc(grp?.color || 'var(--ink-3)')}" aria-label="Whose stops to show">${grp ? esc(grp.name) : 'Everyone'}</button>` : ''}
       <span class="strip-left">${leftText}</span>
       <button class="icon-btn small" data-next aria-label="Next day" ${i >= days.length - 1 ? 'disabled' : ''}>${icon('chevron-right')}</button>
     </div>
@@ -272,7 +307,7 @@ export function renderStrip() {
       <div class="rail-track"></div><div class="rail-done"></div>
       ${stops.map((s, k) => `<button class="rail-stop" data-id="${s.place.id}" data-state="${k === nextIdx && stripDay >= t ? 'next' : s.state}"
           aria-label="${k + 1}. ${esc(s.place.name)}, ${s.state === 'todo' ? 'to visit' : s.state}" title="${esc(s.place.name)}">
-          <span class="station sm" data-state="${s.state === 'todo' ? (k === nextIdx ? 'next' : '') : s.state}">${s.state === 'visited' ? '✓' : k + 1}</span></button>`).join('')}
+          <span class="station sm" data-state="${s.state === 'todo' ? (k === nextIdx ? 'next' : '') : s.state}" ${s.place.groupId && groupById(s.place.groupId) ? `style="--ring:${esc(groupById(s.place.groupId).color)}"` : ''}>${s.state === 'visited' ? '✓' : k + 1}</span></button>`).join('')}
     </div></div>` : `<div class="strip-empty">No confirmed stops for this day yet. <button data-plan>Plan it</button></div>`}`;
 
   el.querySelector('[data-prev]').onclick = () => emit('strip-day', days[i - 1]);
@@ -280,6 +315,12 @@ export function renderStrip() {
   el.querySelector('[data-itin]').onclick = () => { emit('itin-day', stripDay); emit('go', 'itinerary'); };
   el.querySelector('[data-plan]')?.addEventListener('click', () => { emit('itin-day', stripDay); emit('go', 'itinerary'); });
   el.querySelectorAll('.rail-stop').forEach((b) => b.onclick = () => emit('focus-place', b.dataset.id));
+  el.querySelector('[data-pick-group]')?.addEventListener('click', () => {
+    // Cycle: everyone, then each subgroup active that day
+    const order = [null, ...dayGroups.map((g) => g.id)];
+    stripGroup = order[(order.indexOf(gid) + 1) % order.length];
+    renderStrip(); renderPlaces(); renderFriends();
+  });
 
   // size the "done" part of the rail
   requestAnimationFrame(() => {
@@ -355,7 +396,7 @@ function setupSearch() {
       return;
     }
     const ql = q.toLowerCase();
-    const local = [...state.places.values()].filter((p) => p.name.toLowerCase().includes(ql) || (p.notes || '').toLowerCase().includes(ql)).slice(0, 5);
+    const local = [...state.places.values()].filter((p) => !p.removedAt).filter((p) => p.name.toLowerCase().includes(ql) || (p.notes || '').toLowerCase().includes(ql)).slice(0, 5);
     const renderLocal = () => local.length ? `<div class="results-label">In your trip</div>${local.map((p) => `
       <button class="result" data-local="${p.id}"><span class="place-dot" style="--dot:${STATUS[effectiveStatus(p)].color};flex:none"></span>
       <span class="result-body"><div class="result-name">${esc(p.name)}</div><div class="result-sub">${esc(STATUS[effectiveStatus(p)].label)}${p.day ? `, ${esc(fmtDay(p.day))}` : ''}</div></span></button>`).join('')}` : '';
@@ -407,7 +448,7 @@ function setupControls() {
   $('#ctl-layers').onclick = (e) => {
     e.stopPropagation();
     if (!pop.hidden) return hideLayers();
-    const rows = ['confirmed', 'maybe', 'suggested', 'visited', 'missed', 'skipped', 'vetoed'];
+    const rows = ['confirmed', 'maybe', 'suggested', 'visited', 'missed', 'skipped', 'vetoed', ...(state.me?.isAdmin ? ['removed'] : [])];
     pop.innerHTML = `<h4>Show on map</h4>${rows.map((s) => `
       <label class="check-row"><input type="checkbox" data-s="${s}" ${visible[s] ? 'checked' : ''}><span class="place-dot" style="--dot:${STATUS[s].color};width:12px;height:12px;border-width:2px"></span>${STATUS[s].label}</label>`).join('')}
       <label class="check-row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px"><input type="checkbox" data-s="onlyDay" ${visible.onlyDay ? 'checked' : ''}>Only the selected day</label>`;

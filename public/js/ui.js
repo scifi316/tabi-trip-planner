@@ -13,6 +13,7 @@ export const STATUS = {
   missed: { label: 'Missed', color: 'var(--c-missed)' },
   skipped: { label: 'Skipped', color: 'var(--c-skipped)' },
   vetoed: { label: 'Vetoed', color: 'var(--c-vetoed)' },
+  removed: { label: 'Previously interested', color: 'var(--ink-3)' },
 };
 export const STATUS_ORDER = ['confirmed', 'maybe', 'suggested', 'visited', 'missed', 'skipped', 'vetoed'];
 
@@ -132,6 +133,21 @@ export function openSheet({ title = '', sub = '', head = '', body = '', foot = '
   if (!peek) setTimeout(() => (el.querySelector('[autofocus]') || el).focus({ preventScroll: true }), 50);
   return api;
 }
+// A yes/no confirmation sheet. Resolves true when confirmed.
+export function confirmSheet({ title, body = '', confirm = 'Confirm', cancel = 'Cancel', danger = false }) {
+  return new Promise((resolve) => {
+    let done = false;
+    const s = openSheet({
+      title,
+      body: body ? `<p class="hint" style="font-size:14.5px">${body}</p>` : '',
+      foot: `<button class="btn" data-no>${esc(cancel)}</button><button class="btn ${danger ? 'danger-fill' : 'primary'}" data-yes autofocus>${esc(confirm)}</button>`,
+      onClose: () => { if (!done) resolve(false); },
+    });
+    s.el.querySelector('[data-no]').onclick = () => s.close();
+    s.el.querySelector('[data-yes]').onclick = () => { done = true; resolve(true); s.close(); };
+  });
+}
+
 export function closePeekSheets() { sheetStack.filter((s) => s.peek).forEach((s) => s.close()); }
 export function closeAllSheets() { [...sheetStack].forEach((s) => s.close()); }
 export function topSheet() { return sheetStack[sheetStack.length - 1]; }

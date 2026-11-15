@@ -1,6 +1,6 @@
 // The place details sheet, shared by the map and the itinerary.
-import { state, on, op, userById, tripDays, effectiveStatus, voteCounts, dayStops, emit, byPlan } from './store.js';
-import { openSheet, esc, icon, avatar, STATUS, fmtDay, ago, googleDirections, googlePlace, toast } from './ui.js';
+import { state, on, op, userById, groupById, groupsOn, tripDays, effectiveStatus, voteCounts, dayStops, emit, byPlan } from './store.js';
+import { openSheet, esc, icon, avatar, STATUS, fmtDay, ago, googleDirections, googlePlace, toast, confirmSheet } from './ui.js';
 
 let current = null; // { id, sheet }
 
@@ -23,10 +23,11 @@ on('places', () => {
   render();
 });
 on('users', () => current && render());
+on('subgroups', () => current && render());
 
 function stationLabel(p) {
   if (!p.day) return '';
-  const stops = dayStops(p.day);
+  const stops = dayStops(p.day, p.groupId);
   const i = stops.findIndex((s) => s.place.id === p.id);
   return i >= 0 ? String(i + 1) : '';
 }
@@ -36,7 +37,7 @@ function timePatch(p, time) {
   const patch = { time };
   if (!time || !p.day) return patch;
   const others = [...state.places.values()]
-    .filter((o) => o.id !== p.id && o.day === p.day && ['confirmed', 'visited', 'skipped'].includes(o.status))
+    .filter((o) => o.id !== p.id && !o.removedAt && o.day === p.day && ['confirmed', 'visited', 'skipped'].includes(o.status))
     .sort(byPlan);
   const iAfter = others.findIndex((o) => o.time && o.time > time);
   if (iAfter >= 0) {
@@ -62,14 +63,18 @@ function render() {
   const counts = voteCounts(p);
   const mine = p.votes?.[state.me?.id];
   const days = tripDays();
-  const n = stationLabel(p);
+  const n = p.removedAt ? '' : stationLabel(p);
+  const grp = p.groupId ? groupById(p.groupId) : null;
+  const groupChoices = groupsOn(p.day);
+  if (grp && !groupChoices.includes(grp)) groupChoices.push(grp);
+  const remover = userById(p.removedBy);
 
   sheet.setHead(`
     ${n ? `<span class="station" data-state="${p.status === 'visited' ? 'visited' : eff === 'missed' ? 'missed' : 'todo'}" style="flex:none;margin-top:2px">${n}</span>` : ''}
     <div class="grow">
       <h2>${esc(p.name)}</h2>
       <div class="sub">${p.address ? esc(p.address) : `${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}`}</div>
-      <div style="margin-top:8px"><span class="status-pill" style="--sw:${st.color}">${st.label}</span>
+      <div style="margin-top:8px"><span class="status-pill" style="--sw:${st.color}">${st.label}</span>${grp ? ` <span class="group-tag" style="--g:${esc(grp.color)}">${esc(grp.name)}</span>` : ''}
       ${p.day ? `<span class="muted" style="font-size:13px;margin-left:8px">${esc(fmtDay(p.day))}${p.time ? ` at ${esc(p.time)}` : ''}</span>` : ''}</div>
     </div>`);
 
@@ -80,6 +85,12 @@ function render() {
 
   const creator = userById(p.createdBy);
   sheet.body.innerHTML = `
+    ${p.removedAt ? `<div class="banner">
+        <div><b>Previously interested.</b> ${esc(remover?.name || 'Someone')} removed this ${ago(p.removedAt)}. Only admins can see it.</div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn small primary" data-unremove>${icon('restore')}Bring back to the trip</button>
+          <button class="btn small danger" data-purge>${icon('trash')}Delete for good</button>
+        </div></div>` : ''}
     <div class="inline-fields" style="margin-top:2px">
       <label class="field"><span>Day</span>
         <select class="input" data-f="day">
@@ -90,6 +101,11 @@ function render() {
       <label class="field" style="flex:0 0 140px"><span>Time</span>
         <input class="input num" type="time" data-f="time" value="${esc(p.time || '')}"></label>
     </div>
+    ${groupChoices.length ? `<label class="field"><span>Who’s going</span>
+      <select class="input" data-f="group">
+        <option value="">Everyone</option>
+        ${groupChoices.map((g) => `<option value="${g.id}" ${g.id === p.groupId ? 'selected' : ''}>${esc(g.name)} (${g.memberIds.length})</option>`).join('')}
+      </select></label>` : ''}
 
     <div class="status-seg" role="group" aria-label="Plan status">
       ${['suggested', 'maybe', 'confirmed'].map((s) => `<button data-status="${s}" style="--sw:${STATUS[s].color}" aria-pressed="${p.status === s}">${STATUS[s].label}</button>`).join('')}
@@ -121,7 +137,7 @@ function render() {
 
     <div class="meta-foot">
       <span>Added by ${esc(creator?.name || 'someone')}${p.createdAt ? `, ${ago(p.createdAt)}` : ''}${p.layer ? ` from “${esc(p.layer)}”` : ''}</span>
-      <button class="btn small danger" data-delete>${icon('trash')}Remove</button>
+      ${p.removedAt ? '' : `<button class="btn small danger" data-delete>${icon('trash')}Remove</button>`}
     </div>`;
 
   const b = sheet.body;
@@ -132,6 +148,16 @@ function render() {
   b.querySelector('[data-f=time]').onchange = (e) => update(timePatch(p, e.target.value || null));
   b.querySelector('[data-f=notes]').onchange = (e) => update({ notes: e.target.value });
   b.querySelector('[data-f=name]').onchange = (e) => e.target.value.trim() && update({ name: e.target.value.trim() });
+  b.querySelector('[data-f=group]')?.addEventListener('change', (e) => update({ groupId: e.target.value || null }));
+  b.querySelector('[data-unremove]')?.addEventListener('click', async () => {
+    const r = await op('place.restore', { id: p.id });
+    if (r.ok === false) toast(r.error); else toast(`${p.name} is back in the trip`);
+  });
+  b.querySelector('[data-purge]')?.addEventListener('click', async () => {
+    if (!(await confirmSheet({ title: `Delete ${p.name} for good?`, body: 'It disappears for everyone, including its votes. This can’t be undone.', confirm: 'Delete for good', danger: true }))) return;
+    const r = await op('place.purge', { id: p.id });
+    if (r.ok === false) toast(r.error);
+  });
 
   b.querySelectorAll('[data-status]').forEach((btn) => btn.onclick = () => {
     const s = btn.dataset.status;
@@ -152,11 +178,14 @@ function render() {
     }
   });
   b.querySelector('[data-show]').onclick = () => { emit('focus-place', p.id); emit('go', 'map'); };
-  const del = b.querySelector('[data-delete]');
-  del.onclick = () => {
-    if (del.dataset.armed) { op('place.delete', { id: p.id }); toast(`Removed ${p.name}`); return; }
-    del.dataset.armed = '1';
-    del.innerHTML = `${icon('trash')}Tap again to remove`;
-    setTimeout(() => { if (del.isConnected) { delete del.dataset.armed; del.innerHTML = `${icon('trash')}Remove`; } }, 3000);
-  };
+  b.querySelector('[data-delete]')?.addEventListener('click', async () => {
+    const ok = await confirmSheet({
+      title: `Remove ${p.name}?`,
+      body: 'It leaves the map and the itinerary for everyone. The trip admin can bring it back from “Previously interested”.',
+      confirm: 'Remove', danger: true,
+    });
+    if (!ok) return;
+    op('place.delete', { id: p.id });
+    toast(`Removed ${p.name}`);
+  });
 }
