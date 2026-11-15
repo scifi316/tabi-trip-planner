@@ -1,4 +1,4 @@
-# Fly.io primary in Tokyo. Step-by-step in docs/HOSTING.md:
+# Alternative primary on Fly.io in Tokyo (the main guide uses DigitalOcean; see docs/HOSTING.md).
 #   fly launch --no-deploy --copy-config        (first time; pick an app name)
 #   fly volumes create tabi_data --region nrt --size 1
 #   fly secrets set ACCESS_KEY=... TUNNEL_TOKEN=... S3_ENDPOINT=... S3_BUCKET=... S3_ACCESS_KEY_ID=... S3_SECRET_ACCESS_KEY=...

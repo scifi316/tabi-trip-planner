@@ -1,10 +1,12 @@
-# Home server backup. Runs the same image; stays on standby until the primary stops renewing its lease.
-#   cp ../../.env.example .env   then fill in the same S3_* / TUNNEL_TOKEN / ACCESS_KEY as Fly
-#   docker compose up -d --build
+# Home server backup. Same image; stays on standby until the primary stops renewing its lease.
+# Linux:   sudo bash deploy/setup.sh --role backup --node home
+# Windows/macOS (Docker Desktop): copy ../../.env.example to .env here, fill it in, then
+#          docker compose up -d --build
 services:
   tabi:
     build:
       context: ../..
+    image: tabi:latest
     container_name: tabi-backup
     restart: always            # it exits on purpose when it hands back to the primary
     volumes:
@@ -12,9 +14,11 @@ services:
     env_file: .env
     environment:
       HA_MODE: "on"
-      HA_NODE: "home"
       HA_PRIORITY: "backup"
       TRUST_PROXY: "true"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     # Optional: reach it on your LAN while it is serving. Not needed for the public site.
     # ports:
     #   - "8080:8080"

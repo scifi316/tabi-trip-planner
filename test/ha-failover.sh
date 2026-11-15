@@ -2,7 +2,7 @@
 # Failover drill against a local mock of R2: primary dies, backup takes over, primary takes back.
 # Usage: bash test/ha-failover.sh
 set -u
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 T=$(mktemp -d); trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 node test/mock-s3.mjs > "$T/s3.log" 2>&1 &
 sleep 0.5
@@ -14,10 +14,10 @@ run() { # name port priority
 }
 role() { curl -s "localhost:$1/healthz" | grep -o '"role":"[a-z]*"' | cut -d'"' -f4; }
 wait_for() { for i in $(seq 1 30); do [ "$(role "$1")" = leader ] && { echo "  $2 after ${i}s"; return 0; }; sleep 1; done; echo "  FAILED: $2"; exit 1; }
-P=$(run primary 8101 primary); sleep 1.5; H=$(run home 8102 backup); sleep 2
+P=$(run primary 8101 primary); sleep 1.5; run home 8102 backup >/dev/null; sleep 2
 curl -s -c "$T/c" -H 'Content-Type: application/json' -d '{"tripName":"HA","name":"Test","password":"secret1"}' localhost:8101/api/setup >/dev/null
 sleep 2
 echo "kill -9 primary"; kill -9 "$P"; wait_for 8102 "backup took over"
-[ "$(curl -s -b "$T/c" localhost:8102/api/status | grep -o '"signedIn":true')" ] && echo "  session survived failover" || { echo "  FAILED: session lost"; exit 1; }
+if curl -s -b "$T/c" localhost:8102/api/status | grep -q '"signedIn":true'; then echo "  session survived failover"; else echo "  FAILED: session lost"; exit 1; fi
 echo "restart primary"; P=$(run primary 8101 primary); wait_for 8101 "primary took back over"
 echo "OK"

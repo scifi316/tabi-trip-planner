@@ -3,7 +3,7 @@
 A private, self-hosted web app for a group of friends travelling together: a shared map and itinerary, voting on places, live locations, subgroups, and shared expenses with receipt scanning. It's a PWA, so there's no App Store. Open the link and add it to your home screen.
 
 - **Run it locally:** `npm install && npm start`, then open http://localhost:8080
-- **Host it properly** (your domain, private link, cloud primary with your home server as backup): see [docs/HOSTING.md](docs/HOSTING.md)
+- **Host it properly** (your domain, private link, a DigitalOcean droplet in Singapore with your home server as backup): see [docs/HOSTING.md](docs/HOSTING.md). One script sets up each server: `deploy/setup.sh`.
 
 ---
 
@@ -68,11 +68,12 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Self-hosted Node.js app with SQLite (built into Node). The only server dependencies are `ws` and `aws4fetch`.
 - [x] **Private link gate**: without the secret key, the site returns "Not found".
 - [x] Cookie sessions (HttpOnly, Secure, SameSite), stored hashed, cached in memory, with sliding expiry. You can see your signed-in devices and sign the others out.
-- [x] **High availability**: a cloud primary (Fly.io, Tokyo) and your home server as backup.
+- [x] **High availability**: a cloud primary (DigitalOcean Singapore, or Fly.io Tokyo) and your home server as backup.
   - A lease in Cloudflare R2 decides which one serves.
   - The database is snapshotted continuously, and receipts are stored in R2.
   - Failover and hand-back are automatic, and only the serving machine runs the Cloudflare Tunnel.
 - [x] Docker image (amd64 and arm64) with cloudflared included.
+- [x] One-command server setup (`deploy/setup.sh`): swap, Docker, firewall, deploy key, secrets and start-up. Updating is one command too (`deploy/update.sh`).
 
 ## Future improvements
 
@@ -113,8 +114,10 @@ public/            No-build PWA (plain ES modules)
   js/tour.js       First-run tips
   js/settings.js   Account, devices, sharing, theme, offline maps, trip admin
   sw.js            Service worker
-fly.toml           Fly.io primary;  deploy/home/  home-server backup
-docs/HOSTING.md    Domain, private link, Fly.io, home backup, failover runbook
+deploy/setup.sh    One-command server setup (primary or backup);  deploy/update.sh  pull and rebuild
+deploy/droplet/    DigitalOcean primary (compose);  deploy/home/  home-server backup (compose)
+fly.toml           Alternative primary on Fly.io (Tokyo)
+docs/HOSTING.md    Domain, private link, DigitalOcean, home backup, failover runbook
 ```
 
 ## Configuration
