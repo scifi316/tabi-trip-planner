@@ -79,7 +79,7 @@ export function createAuth({ db, env = process.env, trustProxy = false }) {
         cache.set(hash, entry);
       }
       const user = db.prepare('SELECT * FROM users WHERE id = ?').get(entry.userId);
-      if (!user) { cache.delete(hash); return null; }
+      if (!user || user.removed_at) { cache.delete(hash); return null; } // removed from the trip: signed out everywhere
       let refreshCookie;
       // Sliding expiry: touch the session (and re-issue the cookie) at most twice a day.
       if (!entry.lastSeen || t - entry.lastSeen > DAY / 2) {

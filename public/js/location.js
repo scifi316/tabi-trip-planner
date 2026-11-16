@@ -12,6 +12,9 @@ let wakeLock = null;
 export const myPosition = () => pos;
 export const deviceSending = () => localStorage.getItem(DEVICE_KEY) !== 'off';
 export const isWatching = () => watchId != null;
+// Following yourself on the map needs live GPS even when you aren't sharing; nothing is sent unless sharing is on.
+let followWanted = false;
+export function setFollowGps(on) { followWanted = on; syncWatcher(); }
 
 function onPos(p) {
   pos = { lat: p.coords.latitude, lng: p.coords.longitude, acc: p.coords.accuracy, heading: p.coords.heading, speed: p.coords.speed, ts: p.timestamp || Date.now() };
@@ -75,7 +78,7 @@ export async function requestWake() {
 
 // Keep watching while sharing is on and the app is visible.
 export function syncWatcher() {
-  const want = state.me?.shareLocation && deviceSending();
+  const want = (state.me?.shareLocation && deviceSending()) || followWanted;
   if (want && !document.hidden) { startWatching(); maybeSend(true); }
   else if (!want) stopWatching();
 }

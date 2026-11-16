@@ -24,6 +24,9 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - **Money**: what you owe each other, your expenses together, and settle up.
 - [x] **Clusters**: as you zoom out, nearby places group into one marker with a count and a ring split by status colour. Tapping one zooms to fit everything in it. If they're all at the same spot, it lists them instead. The place you have open always stays visible, and the day's numbered stops stay separate until you zoom out past city level.
 - [x] Markers stay pinned to their spot while you zoom and pan.
+- [x] **Follow mode**: tap the locate button twice, or tap your blue dot, and the map keeps you centred as you move. Tap a friend on the map, or *Follow* on their card, to keep them centred. Dragging the map or *Stop* ends it.
+- [x] **Show everyone** map button fits everyone who's sharing their location, alongside *fit all places*. Both work on phones after a friend's card has been open, which they didn't before 1.5.
+- [x] Tooltips on icon buttons, shown with a mouse or keyboard only (never on touch screens).
 - [x] Layer filter to choose which statuses show on the map.
 - [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
@@ -94,8 +97,9 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Export the trip as KML or JSON.
 
 ### Developer console
-- [x] `/dev`, behind its own `DEV_KEY`. It updates live, and is read-only apart from clearing expenses.
+- [x] `/dev`, behind its own `DEV_KEY`. It updates live. Its only actions are clearing expenses and making password reset links.
   - **Overview:** server health and failover state, data counts, settings, and who has the app open. It can also clear all expenses (type CLEAR) and undo the last clear.
+  - **Accounts:** everyone, current and former. It shows whether each person has a recovery code, their devices and when they were last seen, and can make a one-time password reset link. Useful if the only admin is the one locked out.
   - **Locations:** a map with trails, plus every location update with its source, accuracy, battery and delay.
   - **OwnTracks:** every request with its result. Wrong token, unknown user, sharing off, or stored.
   - **Places:** the full table, including removed places and who removed them.
@@ -107,6 +111,12 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Self-hosted Node.js app with SQLite (built into Node). The only server dependencies are `ws` and `aws4fetch`.
 - [x] **Private link gate**: without the secret key, the site returns "Not found".
 - [x] Cookie sessions (HttpOnly, Secure, SameSite), stored hashed, cached in memory, with sliding expiry. You can see your signed-in devices and sign the others out.
+- [x] **Forgot password, without losing the account:**
+  - **Recovery code:** a one-time code, 80 bits, stored hashed, that you set up in the app. Everyone is asked once after signing in (with "Remind me later"). With it, you set a new password from the sign-in screen and get a fresh code. Your other devices are signed out. It allows 5 wrong tries per name per hour.
+  - **No code? "Ask a trip admin"** notifies the admins without revealing whether the name exists. An admin makes a **reset link** in Settings → People. It's single-use, lasts 24 hours, and each new link cancels the last. You and the admin are both notified when it's used.
+- [x] **Removing someone, or leaving, keeps their account as a former member.** They can't sign in, but their expenses still count, so balances stay right; they show as "left the trip".
+  - Admins can bring them back, or **merge** the old account into a new one if they rejoined under a different name.
+  - People removed before 1.5 (when removal deleted the account) are restored automatically from their expenses, named from the activity log.
 - [x] **High availability**: a cloud primary (DigitalOcean Singapore, or Fly.io Tokyo) and your home server as backup.
   - A lease in Cloudflare R2 decides which one serves.
   - The database is snapshotted continuously, and receipts are stored in R2.

@@ -6,7 +6,7 @@ import { openFriends, openFriend } from './friends.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets, openSheet } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
-import { myPosition, locateOnce } from './location.js';
+import { myPosition, locateOnce, setFollowGps } from './location.js';
 
 let map;
 let styleUrl = null;
@@ -113,8 +113,15 @@ export function initMap() {
   });
   on('fit-all', fitAll);
   on('focus-friend', focusFriend);
+  on('follow-friend', (id) => startFollow({ kind: 'friend', id: +id }, { fly: false }));
+  on('stop-follow', stopFollow);
+  on('mypos', () => { if (follow?.kind === 'me') keepFollowing(); });
+  // Moving the map yourself ends following (zooming doesn't)
+  map.on('dragstart', (e) => { if (e.originalEvent) stopFollow(); });
+  on('focus-place', stopFollow);
   on('fit-friends', fitFriends);
   on('locations', () => {
+    if (follow?.kind === 'friend') { if (!state.locations[follow.id]) stopFollow(); else keepFollowing(); }
     if (!accCircle) return;
     const l = state.locations[accCircle.userId];
     if (!l) accCircle = null; else Object.assign(accCircle, { lng: l.lng, lat: l.lat, acc: l.acc || 0 }); // follow them as they move
@@ -156,13 +163,21 @@ function padding() {
   return { top: 120, bottom: Math.min(bottom, innerHeight / 2), left: 30, right: 70 };
 }
 
+// fitBounds adds its padding to whatever padding the map kept from the last camera move (pinpointing a
+// friend, opening a place). On a phone the two together left no room, so "fit" landed somewhere odd.
+// absolutePadding makes our padding the only one.
+function fitTo(bounds, opts = {}) {
+  map.fitBounds(bounds, { padding: padding(), absolutePadding: true, ...opts });
+}
+
 function fitAll({ animate = true } = {}) {
   const pts = [...state.places.values()].filter(isVisible);
   if (!pts.length) return;
   if (pts.length === 1) return map.jumpTo({ center: [pts[0].lng, pts[0].lat], zoom: 14 });
   const b = new maplibregl.LngLatBounds();
   pts.forEach((p) => b.extend([p.lng, p.lat]));
-  map.fitBounds(b, { padding: padding(), maxZoom: 15, animate });
+  stopFollow();
+  fitTo(b, { maxZoom: 15, animate });
 }
 
 // ---------- places ----------
@@ -361,7 +376,7 @@ async function openCluster(clusterId, ll) {
     return openSpotList(leaves.map((f) => state.places.get(f.properties.id)).filter(Boolean), ll);
   }
   closePeekSheets();
-  map.fitBounds(b, { padding: padding(), maxZoom: 17, duration: 650 });
+  fitTo(b, { maxZoom: 17, duration: 650 });
 }
 
 function openSpotList(places, ll) {
@@ -388,7 +403,7 @@ function renderFriends() {
   const groupOf = (id) => dayGroups.find((g) => g.memberIds.includes(+id));
   const others = state.users.filter((u) => u.id !== state.me?.id);
   const liveCount = others.filter((u) => state.locations[u.id] && Date.now() - state.locations[u.id].ts < 15 * 60e3).length;
-  if (others.length) chips.push(`<button class="friend-chip friends-btn" data-friends aria-label="Friends: ${liveCount} sharing live">${icon('users', 'small')}<span>Friends</span>${liveCount ? `<span class="age num">${liveCount} live</span>` : ''}</button>`);
+  if (others.length) chips.push(`<button class="friend-chip friends-btn" data-friends aria-label="Friends: ${liveCount} sharing live" data-tip="Friends: where everyone is, their plans, and money between you">${icon('users', 'small')}<span>Friends</span>${liveCount ? `<span class="age num">${liveCount} live</span>` : ''}</button>`);
   for (const g of dayGroups) {
     chips.push(`<button class="friend-chip group-chip" data-group="${g.id}" style="--g:${esc(g.color)}" aria-pressed="${currentGroup() === g.id}"><span class="group-dot"></span><span>${esc(g.name)}</span><span class="age num">${g.memberIds.length}</span></button>`);
   }
@@ -401,7 +416,7 @@ function renderFriends() {
     if (!fm) {
       const el = document.createElement('div');
       el.className = 'friend-marker';
-      el.addEventListener('click', (e) => { e.stopPropagation(); openFriend(u.id, { pinpoint: true }); });
+      el.addEventListener('click', (e) => { e.stopPropagation(); openFriend(u.id, { follow: true }); });
       fm = { el, marker: new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([loc.lng, loc.lat]).addTo(map) };
       friendMarkers.set(u.id, fm);
     }
@@ -412,12 +427,12 @@ function renderFriends() {
     chips.push(`<button class="friend-chip ${stale ? 'stale' : ''}" data-friend="${u.id}">${avatar(u)}<span>${esc(u.name)}</span><span class="age">${ago(loc.ts)}</span></button>`);
   }
   for (const [id, fm] of friendMarkers) if (!seen.has(id)) { fm.marker.remove(); friendMarkers.delete(id); }
-  chips.push(`<button class="friend-chip" data-groups aria-label="Subgroups">${icon('users', 'small')}<span>${dayGroups.length ? 'Groups' : 'Split up'}</span></button>`);
+  chips.push(`<button class="friend-chip" data-groups aria-label="Subgroups" data-tip="Subgroups: for when the group splits up for a day or two">${icon('users', 'small')}<span>${dayGroups.length ? 'Groups' : 'Split up'}</span></button>`);
   row.innerHTML = chips.join('');
   row.querySelector('[data-groups]').onclick = () => openGroups();
   row.querySelector('[data-friends]')?.addEventListener('click', () => openFriends());
   row.querySelectorAll('[data-group]').forEach((b) => b.onclick = () => emit('focus-group', b.dataset.group));
-  row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => openFriend(+b.dataset.friend, { pinpoint: true }));
+  row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => openFriend(+b.dataset.friend, { follow: true }));
 }
 
 // Pinpoint a friend: fly in close, draw how accurate their fix is, and pulse their bubble.
@@ -466,23 +481,77 @@ function focusFriend(id) {
   if (Date.now() - loc.ts > 15 * 60e3) toast(`${u.name} was here ${ago(loc.ts)}. They may have moved since.`);
 }
 function fitFriends() {
-  const pts = Object.entries(state.locations).filter(([id]) => +id !== state.me?.id).map(([, l]) => l);
-  const me = myPosition();
+  stopFollow();
+  const pts = Object.entries(state.locations).filter(([id]) => +id !== state.me?.id && userById(id)).map(([, l]) => l);
+  const me = myPosition() || state.locations[state.me?.id];
   if (me) pts.push(me);
   if (!pts.length) return toast('Nobody is sharing their location right now.');
   if (pts.length === 1) return map.flyTo({ center: [pts[0].lng, pts[0].lat], zoom: 15, padding: padding() });
   const b = new maplibregl.LngLatBounds();
   pts.forEach((l) => b.extend([l.lng, l.lat]));
-  map.fitBounds(b, { padding: padding(), maxZoom: 16 });
+  fitTo(b, { maxZoom: 16 });
+}
+
+// ---------- following (you, or a friend) ----------
+// Tap the locate button twice, or tap your blue dot: the map keeps you centred as you move.
+// Tap a friend on the map: it keeps them centred. Dragging the map, or "Stop", ends it.
+let follow = null; // null | { kind: 'me' } | { kind: 'friend', id }
+let lastLocate = 0;
+function followTarget() {
+  if (follow?.kind === 'me') return myPosition() || state.locations[state.me?.id] || null;
+  if (follow?.kind === 'friend') return state.locations[follow.id] || null;
+  return null;
+}
+function sheetPadding() {
+  const pad = padding();
+  const sheet = document.querySelector('.sheet.peek:not(.closing)');
+  if (sheet && innerWidth < 900) pad.bottom = Math.max(pad.bottom, sheet.offsetHeight + 24);
+  return pad;
+}
+export function startFollow(f, { fly = true } = {}) {
+  follow = f;
+  setFollowGps(f.kind === 'me');
+  renderFollowUi();
+  const t = followTarget();
+  if (t && fly) map.flyTo({ center: [t.lng, t.lat], zoom: Math.max(map.getZoom(), f.kind === 'me' ? 16 : 15.5), padding: sheetPadding(), duration: 800 });
+  emit('follow', follow);
+}
+export function stopFollow() {
+  if (!follow) return;
+  follow = null;
+  setFollowGps(false);
+  renderFollowUi();
+  emit('follow', null);
+}
+function keepFollowing() {
+  const t = followTarget();
+  if (!t || !map || map.isMoving()) return;
+  map.easeTo({ center: [t.lng, t.lat], padding: sheetPadding(), duration: 700 });
+}
+function renderFollowUi() {
+  const btn = $('#ctl-locate');
+  btn.classList.toggle('following', follow?.kind === 'me');
+  btn.setAttribute('aria-pressed', String(follow?.kind === 'me'));
+  btn.setAttribute('aria-label', follow?.kind === 'me' ? 'Following you. Tap to stop.' : 'Show my location. Tap again to follow you.');
+  btn.dataset.tip = follow?.kind === 'me' ? 'Following you. Tap to stop following.' : 'Show my location. Tap again, or tap your blue dot, to follow you as you move.';
+  const chip = $('#follow-chip');
+  if (!follow) { chip.hidden = true; return; }
+  const u = follow.kind === 'me' ? state.me : userById(follow.id);
+  chip.hidden = false;
+  chip.innerHTML = `${follow.kind === 'me' ? '<span class="me-dot mini"></span>' : avatar(u)}<span>Following ${follow.kind === 'me' ? 'you' : esc(u?.name || '')}</span><button data-stop-follow aria-label="Stop following">Stop</button>`;
+  chip.querySelector('[data-stop-follow]').onclick = stopFollow;
 }
 
 function renderMe() {
   const pos = myPosition();
   if (!map || !pos) return;
   if (!meMarker) {
-    const el = document.createElement('div');
+    const el = document.createElement('button');
+    el.type = 'button';
     el.className = 'me-dot';
-    el.title = 'You';
+    el.setAttribute('aria-label', 'You. Tap to follow your location.');
+    el.dataset.tip = 'You. Tap to follow your location as you move.';
+    el.addEventListener('click', (e) => { e.stopPropagation(); if (follow?.kind === 'me') stopFollow(); else startFollow({ kind: 'me' }); });
     meMarker = new maplibregl.Marker({ element: el }).setLngLat([pos.lng, pos.lat]).addTo(map);
   }
   meMarker.setLngLat([pos.lng, pos.lat]);
@@ -659,13 +728,25 @@ function setupSearch() {
 // ---------- controls ----------
 function hideLayers() { $('#layers-pop').hidden = true; $('#ctl-layers').setAttribute('aria-expanded', 'false'); }
 function setupControls() {
+  // First tap: show me. Second tap (or tapping again while centred on me): follow me. While following: stop.
   $('#ctl-locate').onclick = async () => {
+    if (follow?.kind === 'me') return stopFollow();
+    const centred = (() => {
+      const p = myPosition();
+      if (!p) return false;
+      const c = map.project([p.lng, p.lat]), mid = map.project(map.getCenter());
+      return Math.hypot(c.x - mid.x, c.y - mid.y) < 40;
+    })();
+    if (Date.now() - lastLocate < 8000 || centred) { lastLocate = 0; return startFollow({ kind: 'me' }); }
+    lastLocate = Date.now();
     try {
+      stopFollow();
       const pos = await locateOnce();
       map.flyTo({ center: [pos.lng, pos.lat], zoom: Math.max(map.getZoom(), 15), duration: 700 });
     } catch (e) { toast(e.message); }
   };
   $('#ctl-fit').onclick = () => fitAll();
+  $('#ctl-people').onclick = () => fitFriends();
   $('#fab-add').onclick = () => openImport();
   const pop = $('#layers-pop');
   $('#ctl-layers').onclick = (e) => {

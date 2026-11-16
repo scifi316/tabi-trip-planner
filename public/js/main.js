@@ -4,8 +4,10 @@ import { maybeStartTour } from './tour.js';
 import { $, $$, esc, icon, avatar, toast, openSheet, closeAllSheets, closePeekSheets } from './ui.js';
 import { listHtml, bindList, markAllRead, unreadCount, clearNotifToasts } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
+import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
+import './tooltip.js';
 
-const LOGO = `<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#2B3A67"/>
+export const LOGO = `<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#2B3A67"/>
   <path d="M14 44h36" stroke="#9CAEB7" stroke-width="5" stroke-linecap="round"/><path d="M14 44h18" stroke="#00A672" stroke-width="5" stroke-linecap="round"/>
   <circle cx="14" cy="44" r="5.5" fill="#fff" stroke="#00A672" stroke-width="3.5"/><circle cx="32" cy="44" r="5.5" fill="#fff" stroke="#00A672" stroke-width="3.5"/>
   <circle cx="50" cy="44" r="5.5" fill="#fff" stroke="#9CAEB7" stroke-width="3.5"/>
@@ -27,7 +29,7 @@ const meInner = (n) => `${avatar(state.me)}${n ? '<span class="me-badge" aria-hi
 export function meButton() {
   const conn = !state.me ? 'signed-out' : state.conn === 'online' ? 'online' : 'offline';
   const n = unreadCount();
-  return `<button class="me-btn" data-me-btn data-conn="${conn}" aria-label="${esc(meLabel(conn, n))}">${meInner(n)}</button>`;
+  return `<button class="me-btn" data-me-btn data-conn="${conn}" aria-label="${esc(meLabel(conn, n))}" data-tip="Your account, notifications and profile photo">${meInner(n)}</button>`;
 }
 function refreshMeButtons() {
   const n = unreadCount();
@@ -126,7 +128,8 @@ function authScreen(mode, { tripName, joinCode } = {}) {
     login: `
       <label class="field"><span>Your name</span><input class="input" name="name" autocomplete="username" required></label>
       <label class="field"><span>Password</span><input class="input" type="password" name="password" autocomplete="current-password" required></label>
-      <button class="btn primary">Sign in</button>`,
+      <button class="btn primary">Sign in</button>
+      <button type="button" class="linklike" data-forgot>Forgot password?</button>`,
     join: `
       <label class="field"><span>Invite code</span><input class="input num" name="code" value="${esc(joinCode || '')}" autocapitalize="characters" required></label>
       <label class="field"><span>Your name</span><input class="input" name="name" maxlength="24" autocomplete="nickname" required></label>
@@ -142,6 +145,7 @@ function authScreen(mode, { tripName, joinCode } = {}) {
     </form>`;
   el.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => authScreen(b.dataset.mode, { tripName, joinCode }));
   const form = el.querySelector('form');
+  el.querySelector('[data-forgot]')?.addEventListener('click', () => forgotScreen(el, { tripName, name: form.name.value.trim(), back: () => authScreen('login', { tripName }) }));
   form.onsubmit = async (e) => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(form));
@@ -187,6 +191,7 @@ async function startApp() {
   on('users', refreshMeButtons);
   on('state', refreshMeButtons);
   on('notifs', refreshMeButtons);
+  on('state', maybePromptRecovery);
   on('error', (msg) => toast(msg));
   refreshMeButtons();
 
@@ -206,6 +211,12 @@ async function boot() {
   applyTheme();
   const params = new URLSearchParams(location.search);
   const joinCode = params.get('join');
+  // A password reset link from an admin: handle it even if this device is signed in as someone else.
+  if (params.get('reset')) {
+    $('#app').hidden = true;
+    $('#auth').hidden = false;
+    return resetScreen($('#auth'), params.get('reset'));
+  }
   if (state.signedIn && !joinCode) {
     loadCached();
     return startApp(); // works offline from the cached state

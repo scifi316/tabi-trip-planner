@@ -10,6 +10,9 @@ export const NOTIFY_KINDS = {
   people: { default: true },     // someone joins; you're made an admin
   newPlaces: { default: false }, // anyone adds or imports places
   removed: { default: true, admin: true }, // someone removes a place (it goes to Previously interested)
+  help: { default: true, admin: true },    // someone can't sign in and asks for a password reset link
+  // Always on, not shown in Settings: changes to your own account's password or recovery code.
+  security: { default: true, locked: true },
 };
 
 const COALESCE_MS = 15 * 60e3;
@@ -19,13 +22,13 @@ export function prefsOf(user) {
   let saved = {};
   try { saved = JSON.parse(user?.notify_prefs || '{}') || {}; } catch { /* bad JSON: defaults */ }
   const out = {};
-  for (const [k, v] of Object.entries(NOTIFY_KINDS)) out[k] = typeof saved[k] === 'boolean' ? saved[k] : v.default;
+  for (const [k, v] of Object.entries(NOTIFY_KINDS)) out[k] = !v.locked && typeof saved[k] === 'boolean' ? saved[k] : v.default;
   return out;
 }
 
 export function cleanPrefs(input, current) {
   const out = { ...current };
-  for (const k of Object.keys(NOTIFY_KINDS)) if (typeof input?.[k] === 'boolean') out[k] = input[k];
+  for (const [k, v] of Object.entries(NOTIFY_KINDS)) if (!v.locked && typeof input?.[k] === 'boolean') out[k] = input[k];
   return out;
 }
 
@@ -35,7 +38,7 @@ const rowOut = (r) => ({
 });
 
 export function createNotifier({ db, deliver, now = Date.now }) {
-  const users = () => db.prepare('SELECT id, is_admin, notify_prefs FROM users').all();
+  const users = () => db.prepare('SELECT id, is_admin, notify_prefs FROM users WHERE removed_at IS NULL').all();
 
   /**
    * Tell people about something.

@@ -19,6 +19,7 @@ export const state = {
   me: null,
   trip: { name: 'Japan trip', timezone: 'Asia/Tokyo', currency: 'JPY' },
   users: [],
+  formerUsers: [],
   places: new Map(),
   subgroups: [],
   expenses: new Map(),
@@ -36,7 +37,7 @@ export const state = {
 function persist() {
   try {
     localStorage.setItem(LS.state, JSON.stringify({
-      me: state.me, trip: state.trip, users: state.users, places: [...state.places.values()], subgroups: state.subgroups,
+      me: state.me, trip: state.trip, users: [...state.users, ...(state.formerUsers || [])], places: [...state.places.values()], subgroups: state.subgroups,
       expenses: [...state.expenses.values()], locations: state.locations, activity: state.activity.slice(0, 30), config: state.config,
       notifications: state.notifications.slice(0, 60), unread: state.unread,
     }));
@@ -49,7 +50,8 @@ export function loadCached() {
   try {
     const c = JSON.parse(localStorage.getItem(LS.state) || 'null');
     if (!c || !c.me) return false;
-    Object.assign(state, { me: c.me, trip: c.trip, users: c.users, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
+    setUsers(c.users);
+    Object.assign(state, { me: c.me, trip: c.trip, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
       notifications: c.notifications || [], unread: c.unread || 0 });
     state.places = new Map((c.places || []).map((p) => [p.id, p]));
     state.expenses = new Map((c.expenses || []).map((e) => [e.id, e]));
@@ -132,7 +134,7 @@ function setConn(c) { state.conn = c; emit('conn', c); }
 function handle(m) {
   switch (m.t) {
     case 'state':
-      state.me = m.me; state.trip = m.trip; state.users = m.users; state.locations = m.locations;
+      state.me = m.me; state.trip = m.trip; setUsers(m.users); state.locations = m.locations;
       state.online = m.online; state.activity = m.activity; state.config = m.config || {};
       state.subgroups = m.subgroups || [];
       state.notifications = m.notifications || []; state.unread = m.unread || 0;
@@ -164,7 +166,7 @@ function handle(m) {
       emit('locations'); persistSoon(); break;
     case 'presence': state.online = m.online; emit('users'); break;
     case 'users': {
-      state.users = m.users;
+      setUsers(m.users);
       const mine = m.users.find((u) => u.id === state.me?.id);
       if (mine) state.me = { ...state.me, ...mine };
       emit('users'); persistSoon(); break;
@@ -180,6 +182,7 @@ function handle(m) {
       emit('notifs', { fresh: m.item }); persistSoon(); break;
     }
     case 'notif.unread': state.unread = m.unread; emit('notifs'); persistSoon(); break;
+    case 'me.recovery': if (state.me) state.me.recovery = m.recovery; emit('me-recovery'); persistSoon(); break;
     case 'owntracks.status': if (state.me) state.me.owntracks = m.status; emit('owntracks'); persistSoon(); break;
     case 'expense.resetInfo': state.expenseReset = m.info; emit('expense-reset'); break;
     case 'notif.prefs': if (state.me) state.me.notifyPrefs = m.prefs; emit('notif-prefs'); persistSoon(); break;
@@ -293,7 +296,14 @@ function applyLocal(name, d) {
 }
 
 // ---------- derived data ----------
-export const userById = (id) => state.users.find((u) => u.id === +id);
+// state.users: people on the trip. state.formerUsers: people who were removed or left. They can't sign in,
+// but their expenses still count, so money screens and names in old activity still need them.
+export function setUsers(all) {
+  state.users = (all || []).filter((u) => !u.removed);
+  state.formerUsers = (all || []).filter((u) => u.removed);
+}
+export const userById = (id) => state.users.find((u) => u.id === +id) || state.formerUsers?.find((u) => u.id === +id);
+export const isFormer = (id) => !!state.formerUsers?.some((u) => u.id === +id);
 export const groupById = (id) => state.subgroups.find((g) => g.id === id);
 export const today = () => todayIn(state.trip.timezone || 'Asia/Tokyo');
 export const livePlaces = () => [...state.places.values()].filter((p) => !p.removedAt);

@@ -52,10 +52,17 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const newCode = () => Array.from(crypto.randomBytes(6), (b) => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b % 32]).join('');
   const hashPassword = (pw) => { const salt = crypto.randomBytes(16).toString('hex'); return `${salt}:${crypto.scryptSync(pw, salt, 64).toString('hex')}`; };
   function checkPassword(pw, stored) {
-    const [salt, hash] = String(stored).split(':');
-    if (!salt || !hash) return false;
+    const [salt, hash] = String(stored || '').split(':');
+    if (!salt || !hash || hash.length !== 128) return false; // former members restored without a password can't sign in
     return crypto.timingSafeEqual(crypto.scryptSync(pw, salt, 64), Buffer.from(hash, 'hex'));
   }
+  // Recovery codes: 16 characters in 4 groups (80 bits), without look-alike letters. Stored hashed like passwords.
+  const RC_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const newRecoveryCode = () => [...crypto.randomBytes(16)].map((b) => RC_ALPHABET[b % 32]).join('').match(/.{4}/g).join('-');
+  const normRecoveryCode = (c) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
+  const recoveryInfo = (u) => ({ set: !!u.recovery_hash, setAt: u.recovery_set_at || null, snoozeUntil: u.recovery_snooze || null });
+  const recoverFails = new Map(); // user id -> { n, ts }: wrong recovery codes, per account
+  const helpAsked = new Map();    // user id -> time admins were last asked
   const getSetting = (key, fallback) => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(key); return r ? JSON.parse(r.value) : fallback; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
 
@@ -126,6 +133,33 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     return { count: ids.length };
   }
 
+  // ---------- accounts ----------
+  function kickUser(id) {
+    for (const c of clients) if (c.user.id === id) { sendTo(c, { t: 'kicked' }); c.ws.close(); }
+  }
+  function removeMember(target, by) {
+    auth.revokeUser(target.id);
+    db.prepare('UPDATE users SET removed_at = ?, removed_by = ?, share_location = 0, owntracks_token = NULL, is_admin = 0 WHERE id = ?').run(now(), by?.id ?? null, target.id);
+    db.prepare('DELETE FROM votes WHERE user_id = ?').run(target.id);
+    db.prepare('DELETE FROM locations WHERE user_id = ?').run(target.id);
+    db.prepare('DELETE FROM subgroup_members WHERE user_id = ?').run(target.id);
+    db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(target.id);
+    kickUser(target.id);
+    broadcast({ t: 'users', users: listUsers() });
+    broadcast({ t: 'loc', userId: target.id, loc: null });
+    broadcastGroups();
+    for (const id of db.prepare('SELECT DISTINCT place_id FROM votes').all().map((r) => r.place_id)) broadcastPlace(id); // vote counts changed
+  }
+  function makeResetLink(target, createdBy) {
+    const token = newToken();
+    const hash = crypto.createHash('sha256').update(token).digest('hex');
+    db.prepare('DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL').run(target.id); // one live link at a time
+    const expiresAt = now() + 24 * 3600e3;
+    db.prepare('INSERT INTO password_resets(token_hash, user_id, created_by, created_at, expires_at) VALUES(?, ?, ?, ?, ?)').run(hash, target.id, createdBy, now(), expiresAt);
+    devPush('op', { user: target.name, op: 'reset-link.create', ok: true, by: createdBy ? nameOf(createdBy) : 'developer console' });
+    return { token, expiresAt, gate: auth.gateEnabled ? auth.gateToken : null };
+  }
+
   // ---------- OwnTracks status (shown to each person in Settings) ----------
   function ownTracksStatus(u) {
     let info = {};
@@ -142,7 +176,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     for (const c of clients) if (c.user.id === u.id) sendTo(c, { t: 'owntracks.status', status: st });
   }
 
-  const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null });
+  const publicUser = (u) => ({
+    id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null,
+    hasRecovery: !!u.recovery_hash,
+    ...(u.removed_at ? { removed: true, removedAt: u.removed_at } : {}),
+  });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
   const userCount = () => db.prepare('SELECT COUNT(*) n FROM users').get().n;
   const userIdSet = () => new Set(db.prepare('SELECT id FROM users').all().map((u) => u.id));
@@ -206,7 +244,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const admin = !!me.is_admin;
     return {
       t: 'state',
-      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me), owntracks: ownTracksStatus(me) },
+      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me), owntracks: ownTracksStatus(me), recovery: recoveryInfo(me) },
       ...(me.is_admin ? { expenseReset: lastExpenseReset() } : {}),
       trip: tripForClient(user),
       users: listUsers(),
@@ -475,7 +513,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const name = validName(b.name);
         if (!name) return send(res, 400, { error: 'Enter a name up to 24 characters.' });
         if (String(b.password || '').length < 6) return send(res, 400, { error: 'Use a password with at least 6 characters.' });
-        if (db.prepare('SELECT 1 FROM users WHERE name = ?').get(name)) return send(res, 409, { error: `Someone is already called ${name}. Pick another name, or sign in instead.` });
+        const taken = db.prepare('SELECT removed_at FROM users WHERE name = ?').get(name);
+        if (taken?.removed_at) return send(res, 409, { error: `${name} is the name of someone who left the trip. If that's you, ask a trip admin to bring your account back, so your expenses stay with you. Otherwise pick another name.` });
+        if (taken) return send(res, 409, { error: `Someone is already called ${name}. Pick another name, or sign in instead. Forgot your password? Use “Forgot password?” on the sign-in screen.` });
         const used = new Set(db.prepare('SELECT color FROM users').all().map((u) => u.color));
         const color = b.color || COLORS.find((c) => !used.has(c)) || COLORS[userCount() % COLORS.length];
         const r = db.prepare('INSERT INTO users(name, color, pass_hash, created_at, owntracks_token) VALUES(?, ?, ?, ?, ?)')
@@ -492,12 +532,76 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
         const b = await readBody(req);
         const u = db.prepare('SELECT * FROM users WHERE name = ?').get(String(b.name || '').trim());
-        if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) {
+        if (u?.removed_at && checkPassword(String(b.password || ''), u.pass_hash)) {
+          return send(res, 403, { error: 'This account was removed from the trip. Ask a trip admin to bring it back.' });
+        }
+        if (!u || u.removed_at || !checkPassword(String(b.password || ''), u.pass_hash)) {
           devPush('op', { user: String(b.name || '').slice(0, 30), op: 'login', ok: false, error: u ? 'wrong password' : 'no such name', ip: clientIp(req) });
           return send(res, 401, { error: 'Name or password is wrong.' });
         }
         devPush('op', { user: u.name, op: 'login', ok: true, ip: clientIp(req) });
         addCookie(res, auth.create(req, u.id).setCookie);
+        return send(res, 200, { ok: true });
+      }
+
+      // ---- forgotten passwords ----
+      // 1. With a recovery code (set up in the app beforehand): name + code + new password.
+      if (p === '/api/recover' && req.method === 'POST') {
+        if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
+        const b = await readBody(req);
+        if (String(b.password || '').length < 6) return send(res, 400, { error: 'Use a new password with at least 6 characters.' });
+        const u = db.prepare('SELECT * FROM users WHERE name = ? AND removed_at IS NULL').get(String(b.name || '').trim());
+        const f = u && recoverFails.get(u.id);
+        if (f && now() - f.ts < 3600e3 && f.n >= 5) return send(res, 429, { error: 'Too many wrong codes for this name. Wait an hour, or ask a trip admin for a reset link.' });
+        if (!u || !u.recovery_hash || !checkPassword(normRecoveryCode(b.code), u.recovery_hash)) {
+          if (u) recoverFails.set(u.id, { n: (f && now() - f.ts < 3600e3 ? f.n : 0) + 1, ts: f && now() - f.ts < 3600e3 ? f.ts : now() });
+          devPush('op', { user: String(b.name || '').slice(0, 30), op: 'recover', ok: false, error: !u ? 'no such name' : !u.recovery_hash ? 'no recovery code set' : 'wrong code', ip: clientIp(req) });
+          return send(res, 401, { error: 'That name and recovery code don’t match. If you never saved a recovery code, ask a trip admin for a reset link.' });
+        }
+        recoverFails.delete(u.id);
+        // The code is used up: set the new password and hand out a fresh code straight away.
+        const code = newRecoveryCode();
+        db.prepare('UPDATE users SET pass_hash = ?, recovery_hash = ?, recovery_set_at = ? WHERE id = ?').run(hashPassword(b.password), hashPassword(normRecoveryCode(code)), now(), u.id);
+        auth.revokeUser(u.id);
+        kickUser(u.id);
+        addCookie(res, auth.create(req, u.id).setCookie);
+        notifier.notify([{ userId: u.id, kinds: ['security'], text: 'Your password was reset with your recovery code, and you were signed out on your other devices. You have a new recovery code.' }], { ref: { type: 'account', id: u.id } });
+        devPush('op', { user: u.name, op: 'recover', ok: true, ip: clientIp(req) });
+        return send(res, 200, { ok: true, code });
+      }
+      // 2. No recovery code: ask the trip admins for a reset link. Same answer whatever the name, so it can't be used to probe.
+      if (p === '/api/recover/help' && req.method === 'POST') {
+        if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
+        const b = await readBody(req);
+        const u = db.prepare('SELECT * FROM users WHERE name = ? AND removed_at IS NULL').get(String(b.name || '').trim());
+        if (u && now() - (helpAsked.get(u.id) || 0) > 30 * 60e3) {
+          helpAsked.set(u.id, now());
+          const admins = db.prepare('SELECT id FROM users WHERE is_admin = 1 AND removed_at IS NULL AND id != ?').all(u.id);
+          notifier.notify(admins.map((a) => ({ userId: a.id, kinds: ['help'], text: `${u.name} can’t sign in and asked for a password reset link. Open Settings → People → ${u.name} → Reset password.` })),
+            { ref: { type: 'help', id: u.id } });
+          devPush('op', { user: u.name, op: 'recover.help', ok: true, admins: admins.length, ip: clientIp(req) });
+        }
+        return send(res, 200, { ok: true });
+      }
+      // 3. A reset link from an admin (or the developer console): one use, 24 hours.
+      if (p === '/api/reset' && (req.method === 'GET' || req.method === 'POST')) {
+        if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
+        const b = req.method === 'POST' ? await readBody(req) : { token: url.searchParams.get('token') };
+        const hash = crypto.createHash('sha256').update(String(b.token || '')).digest('hex');
+        const r = db.prepare('SELECT r.*, u.name, u.removed_at FROM password_resets r JOIN users u ON u.id = r.user_id WHERE r.token_hash = ?').get(hash);
+        if (!r || r.used_at || r.expires_at < now() || r.removed_at) {
+          return send(res, 410, { error: r?.used_at ? 'This reset link has already been used. Ask a trip admin for a new one.' : 'This reset link has expired or isn’t valid. Ask a trip admin for a new one.' });
+        }
+        if (req.method === 'GET') return send(res, 200, { name: r.name, expiresAt: r.expires_at });
+        if (String(b.password || '').length < 6) return send(res, 400, { error: 'Use a password with at least 6 characters.' });
+        db.prepare('UPDATE users SET pass_hash = ? WHERE id = ?').run(hashPassword(b.password), r.user_id);
+        db.prepare('UPDATE password_resets SET used_at = ? WHERE token_hash = ?').run(now(), hash);
+        auth.revokeUser(r.user_id);
+        kickUser(r.user_id);
+        addCookie(res, auth.create(req, r.user_id).setCookie);
+        notifier.notify([{ userId: r.user_id, kinds: ['security'], text: 'You set a new password with a reset link, and were signed out on your other devices.' }], { ref: { type: 'account', id: r.user_id } });
+        if (r.created_by && r.created_by !== r.user_id) notifier.notify([{ userId: r.created_by, kinds: ['help', 'people'], text: `${r.name} set a new password with your reset link` }], { ref: { type: 'user', id: r.user_id } });
+        devPush('op', { user: r.name, op: 'reset-link', ok: true, ip: clientIp(req) });
         return send(res, 200, { ok: true });
       }
 
@@ -1225,19 +1329,94 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         db.prepare('UPDATE users SET owntracks_token = ? WHERE id = ?').run(tok, user.id);
         return { ok: true, token: tok };
       }
+      // Removing someone (or leaving) keeps their account as a former member: they can't sign in, but
+      // every expense they paid or shared still counts, so everyone's balances stay right.
       case 'user.remove': {
         requireAdmin();
-        if (+d.id === user.id) fail('You cannot remove yourself.');
+        if (+d.id === user.id) fail('To remove yourself, use “Leave the trip” in Settings.');
         const target = db.prepare('SELECT * FROM users WHERE id = ?').get(+d.id);
-        if (!target) return { ok: true };
-        auth.revokeUser(target.id);
-        db.prepare('DELETE FROM users WHERE id = ?').run(target.id);
-        if (target.avatar) dropBlobIfUnused(target.avatar);
-        for (const c of clients) if (c.user.id === target.id) { sendTo(c, { t: 'kicked' }); c.ws.close(); }
+        if (!target || target.removed_at) return { ok: true };
+        removeMember(target, user);
+        logActivity(user.id, `${user.name} removed ${target.name} from the trip. Their expenses still count.`);
+        return { ok: true };
+      }
+      case 'user.leave': {
+        const others = db.prepare('SELECT COUNT(*) n FROM users WHERE is_admin = 1 AND removed_at IS NULL AND id != ?').get(user.id).n;
+        if (user.is_admin && !others) fail('You’re the only admin. Make someone else an admin first, then you can leave.');
+        logActivity(user.id, `${user.name} left the trip. Their expenses still count.`);
+        setTimeout(() => removeMember(user, user), 150); // let this reply reach them first
+        return { ok: true };
+      }
+      case 'user.restore': {
+        requireAdmin();
+        const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NOT NULL').get(+d.id);
+        if (!target) fail('That person isn’t a former member.');
+        db.prepare('UPDATE users SET removed_at = NULL, removed_by = NULL WHERE id = ?').run(target.id);
         broadcast({ t: 'users', users: listUsers() });
-        broadcast({ t: 'loc', userId: target.id, loc: null });
-        broadcastGroups();
-        logActivity(user.id, `${user.name} removed ${target.name} from the trip`);
+        logActivity(user.id, `${user.name} brought ${target.name} back to the trip`);
+        return { ok: true, canSignIn: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(target.pass_hash) }; // restored pre-1.5 members have no password yet
+      }
+      // Someone was removed and rejoined under a new name: move the old account's expenses, places and
+      // activity onto their current account, then drop the old entry. Balances add up exactly as before.
+      case 'user.merge': {
+        requireAdmin();
+        const from = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NOT NULL').get(+d.from);
+        const to = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+d.into);
+        if (!from) fail('Only a former member can be merged.');
+        if (!to) fail('Choose someone who’s on the trip.');
+        const touched = db.prepare('SELECT DISTINCT expense_id id FROM expense_shares WHERE user_id = ? UNION SELECT id FROM expenses WHERE paid_by = ?').all(from.id, from.id).map((r) => r.id);
+        tx(() => {
+          // A share for both people on one expense becomes one share with both amounts
+          for (const s of db.prepare('SELECT * FROM expense_shares WHERE user_id = ?').all(from.id)) {
+            const both = db.prepare('SELECT * FROM expense_shares WHERE expense_id = ? AND user_id = ?').get(s.expense_id, to.id);
+            if (both) {
+              db.prepare('UPDATE expense_shares SET amount = amount + ?, weight = COALESCE(weight, 1) + COALESCE(?, 1) WHERE expense_id = ? AND user_id = ?').run(s.amount, s.weight, s.expense_id, to.id);
+              db.prepare('DELETE FROM expense_shares WHERE expense_id = ? AND user_id = ?').run(s.expense_id, from.id);
+            } else db.prepare('UPDATE expense_shares SET user_id = ? WHERE expense_id = ? AND user_id = ?').run(to.id, s.expense_id, from.id);
+          }
+          for (const it of db.prepare("SELECT rowid, user_ids FROM expense_items WHERE user_ids LIKE ?").all(`%${from.id}%`)) {
+            const ids = JSON.parse(it.user_ids).map((x) => (x === from.id ? to.id : x));
+            db.prepare('UPDATE expense_items SET user_ids = ? WHERE rowid = ?').run(JSON.stringify([...new Set(ids)]), it.rowid);
+          }
+          for (const [t, c] of [['expenses', 'paid_by'], ['expenses', 'created_by'], ['expenses', 'updated_by'], ['places', 'created_by'], ['places', 'removed_by'], ['activity', 'user_id'], ['attachments', 'created_by']]) {
+            db.prepare(`UPDATE ${t} SET ${c} = ? WHERE ${c} = ?`).run(to.id, from.id);
+          }
+          // A payment between the two accounts is now a payment to yourself: drop it
+          db.prepare("UPDATE expenses SET deleted_at = ? WHERE kind = 'payment' AND deleted_at IS NULL AND paid_by = ? AND id IN (SELECT expense_id FROM expense_shares WHERE user_id = ?) AND (SELECT COUNT(*) FROM expense_shares WHERE expense_id = expenses.id) = 1").run(now(), to.id, to.id);
+          db.prepare('DELETE FROM users WHERE id = ?').run(from.id);
+        });
+        broadcast({ t: 'users', users: listUsers() });
+        for (const id of touched) broadcastExpense(id);
+        logActivity(user.id, `${user.name} merged ${from.name}’s old account into ${to.name}. Their expenses now count for ${to.name}.`);
+        notifier.notify([{ userId: to.id, kinds: ['people', 'expenses'], text: `${user.name} moved the expenses from your old account (${from.name}) onto this one` }], { actorId: user.id, ref: { type: 'user', id: to.id } });
+        return { ok: true, expenses: touched.length };
+      }
+      case 'user.resetLink': {
+        requireAdmin();
+        if (+d.id === user.id) fail('Change your own password in Settings → Your account.');
+        const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+d.id);
+        if (!target) fail('That person isn’t on the trip.');
+        const link = makeResetLink(target, user.id);
+        logActivity(user.id, `${user.name} made a password reset link for ${target.name}`);
+        notifier.notify([{ userId: target.id, kinds: ['security'], text: `${user.name} made a password reset link for your account. If you didn’t ask for one, let them know.` }], { actorId: user.id, ref: { type: 'account', id: target.id } });
+        return { ok: true, ...link };
+      }
+
+      // ---- account recovery code ----
+      case 'recovery.setup': {
+        const code = newRecoveryCode();
+        const had = !!user.recovery_hash;
+        db.prepare('UPDATE users SET recovery_hash = ?, recovery_set_at = ?, recovery_snooze = NULL WHERE id = ?').run(hashPassword(normRecoveryCode(code)), now(), user.id);
+        const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(fresh) });
+        if (had) notifier.notify([{ userId: user.id, kinds: ['security'], text: 'A new recovery code was made for your account. The old one no longer works.' }], { ref: { type: 'account', id: user.id } });
+        devPush('op', { user: user.name, op: 'recovery.setup', ok: true, replaced: had });
+        return { ok: true, code };
+      }
+      case 'recovery.snooze': {
+        db.prepare('UPDATE users SET recovery_snooze = ? WHERE id = ?').run(now() + 3 * 864e5, user.id);
+        const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(fresh) });
         return { ok: true };
       }
       case 'user.admin': {
@@ -1323,6 +1502,17 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     if (p === '/api/dev/stream') return devSubscribe(req, res);
     // The only actions in the console: clearing all expenses, and undoing the last clear.
     if (p === '/api/dev/expenses' && req.method === 'GET') return send(res, 200, { counts: expenseCounts(), last: lastExpenseReset() });
+    // Accounts: a one-time password reset link for anyone (e.g. when the only admin is the one locked out).
+    if (p === '/api/dev/reset-link' && req.method === 'POST') {
+      if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-site request refused.' });
+      return readBody(req).then((b) => {
+        const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+b.userId);
+        if (!target) return send(res, 404, { error: 'No such person on the trip.' });
+        const link = makeResetLink(target, null);
+        notifier.notify([{ userId: target.id, kinds: ['security'], text: 'A password reset link was made for your account from the developer console.' }], { ref: { type: 'account', id: target.id } });
+        return send(res, 200, { ok: true, ...link });
+      }).catch((e) => send(res, 400, { error: e.message }));
+    }
     if ((p === '/api/dev/expenses/reset' || p === '/api/dev/expenses/restore') && req.method === 'POST') {
       if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-site request refused.' });
       return readBody(req).then((b) => {
@@ -1371,6 +1561,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
       return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
         id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
+        removedAt: u.removed_at || null, recoverySet: !!u.recovery_hash, hasPassword: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(u.pass_hash),
+        resetLink: db.prepare('SELECT created_at, expires_at FROM password_resets WHERE user_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1').get(u.id, now()) || null,
         owntracksConfigured: !!u.owntracks_token, lastOwnTracks: lastOt[u.id] ? { ts: lastOt[u.id].ts, result: lastOt[u.id].result } : null,
         location: locs[u.id] ? { lat: locs[u.id].lat, lng: locs[u.id].lng, acc: locs[u.id].acc, batt: locs[u.id].batt, ts: locs[u.id].ts, source: locs[u.id].source } : null,
         sessions: db.prepare('SELECT COUNT(*) n, MAX(last_seen) last FROM sessions WHERE user_id = ?').get(u.id),
