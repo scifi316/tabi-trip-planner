@@ -169,8 +169,9 @@ export function render() {
         <button class="btn small" data-restore-expenses>Bring back</button></div>` : ''}
     </div></section>` : ''}
 
-    <section class="section"><h2>Recent activity</h2><div class="card">
-      ${state.activity.slice(0, 25).map((a) => `<div class="row activity">${avatar(userById(a.userId))}<div class="grow">${esc(a.text)}<time>${ago(a.ts)}</time></div></div>`).join('') || '<div class="row help">Nothing yet.</div>'}
+    <section class="section" data-section="activity"><h2>Recent activity</h2><div class="card">
+      <div class="row act-search"><label class="search-field">${icon('search', 'small')}<input type="search" class="input" data-act-q placeholder="Search activity" aria-label="Search activity" value="${esc(act.q)}" autocomplete="off" enterkeyhint="search"></label></div>
+      <div data-act-list>${activityListHtml()}</div>
     </div></section>
 
     <p class="faint" style="font-size:12px;margin:0 20px 10px">Tabi ${esc(state.config.version || '')}. Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
@@ -193,6 +194,10 @@ function bind(el) {
     if (r.ok === false) throw new Error(r.error);
   });
   el.querySelector('[data-password]').onclick = passwordSheet;
+  const q = el.querySelector('[data-act-q]');
+  q.oninput = onActivitySearch;
+  q.onkeydown = (e) => { if (e.key === 'Escape' && q.value) { q.value = ''; onActivitySearch({ target: q }); } };
+  renderActivityList();
   el.querySelector('[data-recovery]').onclick = () => openRecoverySetup({ replacing: !!me.recovery?.set });
   el.querySelector('[data-leave]').onclick = leaveSheet;
   el.querySelectorAll('[data-merge]').forEach((b) => b.onclick = () => mergeSheet(userById(+b.dataset.merge)));
@@ -442,6 +447,90 @@ function leaveSheet() {
     if (r.ok === false) return toast(r.error);
     s.close();
   };
+}
+
+// ---------- recent activity: latest 10, "Show more", and search over the server's history ----------
+// Kept outside render() because Settings redraws often (people coming online, locations…).
+const PAGE = 10, MORE = 20;
+const act = { q: '', shown: PAGE, older: [], more: true, results: null, total: null, loading: false, offline: false };
+
+const highlight = (text, q) => {
+  const t = esc(text);
+  if (!q) return t;
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  return i < 0 ? t : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + q.length))}</mark>${esc(text.slice(i + q.length))}`;
+};
+const actRow = (a, q) => `<div class="row activity">${avatar(userById(a.userId))}<div class="grow">${highlight(a.text, q)}<time title="${esc(new Date(a.ts).toLocaleString())}">${ago(a.ts)}</time></div></div>`;
+
+function activityListHtml() {
+  if (act.q) {
+    if (!act.results) return '<div class="row help">Searching…</div>';
+    const n = act.results.length;
+    return `<div class="row help act-count" role="status">${n ? `${act.total ?? n} match${(act.total ?? n) === 1 ? '' : 'es'}${act.offline ? ', on this phone only (offline)' : ''}` : `Nothing matches “${esc(act.q)}”.`}</div>
+      ${act.results.map((a) => actRow(a, act.q)).join('')}
+      ${act.more && !act.offline ? '<div class="row act-more"><button class="btn small" data-act-more>Show more</button></div>' : ''}`;
+  }
+  const all = [...state.activity, ...act.older.filter((o) => !state.activity.some((a) => a.id === o.id))];
+  if (!all.length) return '<div class="row help">Nothing yet.</div>';
+  const list = all.slice(0, act.shown);
+  const canMore = all.length > act.shown || act.more;
+  return `${list.map((a) => actRow(a)).join('')}
+    <div class="row act-more">${canMore ? '<button class="btn small" data-act-more>Show more</button>' : ''}
+      ${act.shown > PAGE ? '<button class="btn small ghost" data-act-less>Show less</button>' : ''}</div>`;
+}
+
+function renderActivityList() {
+  const box = root().querySelector('[data-act-list]');
+  if (!box) return;
+  box.innerHTML = activityListHtml();
+  box.querySelector('[data-act-more]')?.addEventListener('click', showMoreActivity);
+  box.querySelector('[data-act-less]')?.addEventListener('click', () => { act.shown = PAGE; act.older = []; act.more = true; renderActivityList(); });
+}
+
+async function fetchActivity(before) {
+  const qs = new URLSearchParams({ limit: MORE, ...(act.q ? { q: act.q } : {}), ...(before ? { before } : {}) });
+  return api(`/api/activity?${qs}`);
+}
+
+async function showMoreActivity() {
+  if (act.loading) return;
+  if (act.q) {
+    act.loading = true;
+    try { const r = await fetchActivity(act.results.at(-1)?.id); act.results.push(...r.items); act.more = r.more; } catch { act.more = false; }
+    act.loading = false;
+    return renderActivityList();
+  }
+  const have = state.activity.length + act.older.length;
+  if (act.shown + MORE <= have || !act.more) { act.shown += MORE; return renderActivityList(); }
+  // Past what this phone has: page further back from the server
+  act.loading = true;
+  const last = [...state.activity, ...act.older].at(-1);
+  try { const r = await fetchActivity(last?.id); act.older.push(...r.items); act.more = r.more; } catch { act.more = false; }
+  act.loading = false;
+  act.shown += MORE;
+  renderActivityList();
+}
+
+let actTimer, actSeq = 0;
+function onActivitySearch(e) {
+  act.q = e.target.value.trim();
+  clearTimeout(actTimer);
+  if (!act.q) { act.results = null; return renderActivityList(); }
+  act.results = null;
+  actTimer = setTimeout(async () => {
+    const seq = ++actSeq, q = act.q;
+    try {
+      const r = await fetchActivity();
+      if (seq !== actSeq || q !== act.q) return; // a newer search started
+      Object.assign(act, { results: r.items, more: r.more, total: r.total, offline: false });
+    } catch {
+      // Offline: search what this phone has
+      const local = [...state.activity, ...act.older].filter((a) => a.text.toLowerCase().includes(q.toLowerCase()));
+      Object.assign(act, { results: local, more: false, total: local.length, offline: true });
+    }
+    renderActivityList();
+  }, 250);
+  renderActivityList();
 }
 
 function memberSheet(id) {

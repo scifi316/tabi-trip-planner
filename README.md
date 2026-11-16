@@ -69,7 +69,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
     - **Not set up**
   - The setup sheet updates live, so you can test it by tapping upload in OwnTracks.
   - The username isn't case-sensitive.
-- [x] Activity feed, and admin tools to manage members.
+- [x] Activity feed in Settings: the latest 10, "Show more" back through the last 500 entries, and search (offline it searches what the phone has).
 - [x] **Clear all expenses** (admins, in Settings): everything or shared ones only, with typed confirmation and an Undo. The last clear can also be undone later from Settings. Everyone involved is notified.
 - [x] **Profile photos**: pick a photo, move, zoom and rotate it in a circle, and save it at 240, 320 (default) or 640 pixels. It's cropped and compressed on the phone (WebP, usually under 10 KB), and the server only accepts square images up to 640×640 and 512 KB. Replacing or removing a photo deletes the old file. Shown on map bubbles, friend chips and everywhere else your initials were.
 - [x] **Notifications**, each with its own switch in Settings:

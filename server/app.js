@@ -653,6 +653,17 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         addCookie(res, auth.clearCookie(req));
         return send(res, 200, { ok: true });
       }
+      // Activity history (the last 500 things), newest first, with optional search. before = id to page from.
+      if (p === '/api/activity' && req.method === 'GET') {
+        const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+        const before = parseInt(url.searchParams.get('before'), 10) || Number.MAX_SAFE_INTEGER;
+        const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit'), 10) || 20, 1), 100);
+        const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+        const rows = db.prepare(`SELECT * FROM activity WHERE id < ? ${q ? "AND text LIKE ? ESCAPE '\\'" : ''} ORDER BY id DESC LIMIT ?`)
+          .all(...(q ? [before, like, limit + 1] : [before, limit + 1]));
+        const total = q ? db.prepare("SELECT COUNT(*) n FROM activity WHERE text LIKE ? ESCAPE '\\'").get(like).n : null;
+        return send(res, 200, { items: rows.slice(0, limit).map((a) => ({ id: a.id, ts: a.ts, userId: a.user_id, text: a.text })), more: rows.length > limit, total });
+      }
       if (p === '/api/sessions' && req.method === 'GET') return send(res, 200, { sessions: auth.list(user.id, session.hash) });
       if (p === '/api/logout-others' && req.method === 'POST') {
         auth.revokeUser(user.id, session.hash);
