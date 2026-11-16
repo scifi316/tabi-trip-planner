@@ -24,6 +24,21 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const UA = 'Tabi-trip-planner/1.0 (self-hosted group itinerary app)';
   const auth = createAuth({ db, env, trustProxy: TRUST_PROXY });
   const VERSION = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  // Build id: changes whenever any file the app is made of changes. The page carries the build it
+  // was loaded from, and the server tells every client the current one, so a home-screen app that
+  // iOS kept frozen in the background notices it's out of date and reloads itself.
+  const BUILD = (() => {
+    const h = crypto.createHash('sha256').update(VERSION);
+    const walk = (dir) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const f = path.join(dir, e.name);
+        if (e.isDirectory()) walk(f); else h.update(e.name).update(fs.readFileSync(f));
+      }
+    };
+    try { walk(path.join(root, 'public')); } catch { /* missing public dir in tests */ }
+    return `${VERSION}-${h.digest('hex').slice(0, 10)}`;
+  })();
+  const INDEX_FILE = path.join(root, 'public', 'index.html');
 
   // Developer console: separate secret (DEV_KEY). Read-only views of the database, live locations,
   // OwnTracks traffic, outbound calls and server logs. It also lets the holder past the private-link gate.
@@ -134,7 +149,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       activity: recentActivity(),
       notifications: notifier.list(me.id),
       unread: notifier.unread(me.id),
-      config: { ...CONFIG, version: VERSION, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
+      config: { ...CONFIG, version: VERSION, build: BUILD, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -233,15 +248,18 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         ...(rel === 'sw.js' ? { 'Service-Worker-Allowed': '/' } : {}),
         ...res._extraHeaders,
       };
+      // The page is stamped with the build it belongs to (see BUILD).
+      const body = target === INDEX_FILE ? Buffer.from(fs.readFileSync(target, 'utf8').replace('{{BUILD}}', BUILD)) : null;
       if (COMPRESSIBLE.has(ext) && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) {
         const st = fs.statSync(target);
         const key = target + ':' + st.mtimeMs;
         let gz = gzCache.get(key);
-        if (!gz) { gz = zlib.gzipSync(fs.readFileSync(target), { level: 9 }); gzCache.set(key, gz); }
+        if (!gz) { gz = zlib.gzipSync(body || fs.readFileSync(target), { level: 9 }); gzCache.set(key, gz); }
         res.writeHead(200, { ...headers, 'Content-Encoding': 'gzip', 'Content-Length': gz.length });
         return res.end(req.method === 'HEAD' ? undefined : gz);
       }
       res.writeHead(200, headers);
+      if (body) return res.end(req.method === 'HEAD' ? undefined : body);
       fs.createReadStream(target).pipe(res);
       return;
     }
