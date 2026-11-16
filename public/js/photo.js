@@ -36,7 +36,7 @@ export function openPhotoEditor() {
           <span class="help">How it looks in Tabi</span>
         </div>
         <div class="label" style="margin:14px 0 8px">Size</div>
-        <div class="seg" role="group" aria-label="Photo size">${SIZES.map(([px, l]) => `<button data-size="${px}" aria-pressed="${px === 320}">${l} <span class="num faint">${px}×${px}</span></button>`).join('')}</div>
+        <div class="seg size-seg" role="group" aria-label="Photo size">${SIZES.map(([px, l]) => `<button data-size="${px}" aria-pressed="${px === 320}" aria-label="${l}, ${px} by ${px} pixels"><span>${l}</span><span class="num">${px} px</span></button>`).join('')}</div>
         <p class="help num" data-bytes style="margin:8px 2px 0">&nbsp;</p>
         <p class="err" data-err hidden></p>
       </div>`,
