@@ -223,8 +223,45 @@ async function boot() {
   }
 }
 
+// ---------- staying up to date ----------
+// iOS keeps home-screen apps frozen in the background and resumes the old page, so after an update
+// the app would keep running old code. The server tells us its current build on every (re)connect;
+// if it isn't the build this page was loaded from, reload as soon as nothing is in progress.
+// Unsent edits are kept in localStorage, so a reload never loses them.
+const PAGE_BUILD = document.querySelector('meta[name=tabi-build]')?.content || '';
+let reloadPending = false;
+function busy() {
+  const a = document.activeElement;
+  return !!document.querySelector('.sheet:not(.closing), .tour') || (a && a.matches('input, textarea, select'));
+}
+function reloadWhenIdle() {
+  if (reloadPending) return;
+  const last = +sessionStorage.getItem('tabi.reloadedAt') || 0;
+  if (Date.now() - last < 2 * 60e3) return; // never loop
+  reloadPending = true;
+  const tryNow = async () => {
+    if (busy() && !document.hidden) return setTimeout(tryNow, 4000);
+    sessionStorage.setItem('tabi.reloadedAt', Date.now());
+    sessionStorage.setItem('tabi.justUpdated', '1');
+    try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ }
+    location.reload();
+  };
+  tryNow();
+}
+on('state', () => {
+  const b = state.config.build;
+  if (b && /^\d/.test(PAGE_BUILD) && b !== PAGE_BUILD) reloadWhenIdle();
+});
+if (sessionStorage.getItem('tabi.justUpdated')) {
+  sessionStorage.removeItem('tabi.justUpdated');
+  const off = on('state', () => { off(); toast(`Tabi updated to ${state.config.version || 'the latest version'}`); });
+}
+
 if ('serviceWorker' in navigator && (isSecureContext)) {
-  navigator.serviceWorker.register('/sw.js').catch(() => {});
+  navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => {});
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) navigator.serviceWorker.getRegistration().then((r) => r?.update()).catch(() => {});
+  });
 }
 
 boot();
