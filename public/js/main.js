@@ -2,6 +2,8 @@
 import { state, on, emit, api, op, connect, loadCached, markSignedIn, signOutLocal } from './store.js';
 import { maybeStartTour } from './tour.js';
 import { $, $$, esc, icon, avatar, toast, openSheet, closeAllSheets, closePeekSheets } from './ui.js';
+import { listHtml, bindList, markAllRead, unreadCount, clearNotifToasts } from './notifications.js';
+import { openPhotoEditor } from './photo.js';
 
 const LOGO = `<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#2B3A67"/>
   <path d="M14 44h36" stroke="#9CAEB7" stroke-width="5" stroke-linecap="round"/><path d="M14 44h18" stroke="#00A672" stroke-width="5" stroke-linecap="round"/>
@@ -19,16 +21,21 @@ export function applyTheme() {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
 // ---------- the avatar button, top-left on every screen ----------
+// A red "!" on it means there are unread notifications.
+const meLabel = (conn, n) => `Signed in as ${state.me?.name || ''}. ${conn === 'online' ? 'Connected' : 'Offline'}.${n ? ` ${n} unread notification${n > 1 ? 's' : ''}.` : ''}`;
+const meInner = (n) => `${avatar(state.me)}${n ? '<span class="me-badge" aria-hidden="true">!</span>' : ''}`;
 export function meButton() {
   const conn = !state.me ? 'signed-out' : state.conn === 'online' ? 'online' : 'offline';
-  return `<button class="me-btn" data-me-btn data-conn="${conn}" aria-label="Signed in as ${esc(state.me?.name || '')}. ${conn === 'online' ? 'Connected' : 'Offline'}">${avatar(state.me)}</button>`;
+  const n = unreadCount();
+  return `<button class="me-btn" data-me-btn data-conn="${conn}" aria-label="${esc(meLabel(conn, n))}">${meInner(n)}</button>`;
 }
 function refreshMeButtons() {
+  const n = unreadCount();
   for (const b of $$('[data-me-btn]')) {
     const conn = !state.me ? 'signed-out' : state.conn === 'online' ? 'online' : 'offline';
     b.dataset.conn = conn;
-    b.innerHTML = avatar(state.me);
-    b.setAttribute('aria-label', `Signed in as ${state.me?.name || ''}. ${conn === 'online' ? 'Connected' : 'Offline'}`);
+    b.innerHTML = meInner(n);
+    b.setAttribute('aria-label', meLabel(conn, n));
   }
 }
 document.addEventListener('click', (e) => {
@@ -38,10 +45,17 @@ document.addEventListener('click', (e) => {
 function accountSheet() {
   const me = state.me;
   const pending = state.outbox.length;
+  // Unread ones stay highlighted while the sheet is open; they're marked read straight away.
+  const fresh = new Set(state.notifications.filter((n) => !n.read).map((n) => n.id));
+  clearNotifToasts();
   const s = openSheet({
-    head: `<div style="display:flex;gap:12px;align-items:center" class="grow">${avatar(me, '')}<div><h2>${esc(me.name)}</h2>
+    className: 'account-sheet',
+    head: `<div style="display:flex;gap:12px;align-items:center" class="grow"><button class="photo-btn" data-photo aria-label="Change your profile photo">${avatar(me, 'big')}<span class="photo-cam">${icon('camera', 'small')}</span></button><div><h2>${esc(me.name)}</h2>
       <div class="sub">${state.conn === 'online' ? 'Signed in and connected' : state.conn === 'connecting' ? 'Signed in, connecting…' : 'Signed in, offline'}${pending ? `. ${pending} change${pending > 1 ? 's' : ''} will sync when you reconnect` : ''}</div></div></div>`,
-    body: `<div class="card" style="margin:0 0 12px;background:var(--surface-2)">
+    body: `<div class="notif-head"><h3>Notifications</h3>${fresh.size ? `<span class="tag new">${fresh.size} new</span>` : ''}<span class="grow"></span>
+        <button class="btn small ghost" data-notif-settings>Choose what you get</button></div>
+      <div data-notifs>${listHtml(state.notifications, { fresh })}</div>
+      <div class="card" style="margin:14px 0 12px;background:var(--surface-2)">
         <div class="row"><div class="grow"><div class="label">Share my location</div><div class="help">${me.shareLocation ? 'Friends can see you on the map' : 'Off'}</div></div>
           <label class="switch"><input type="checkbox" data-share ${me.shareLocation ? 'checked' : ''} aria-label="Share my location"><span></span></label></div>
       </div>
@@ -52,6 +66,18 @@ function accountSheet() {
     if (r.ok === false) { toast(r.error); e.target.checked = !e.target.checked; }
   };
   s.el.querySelector('[data-go-settings]').onclick = () => { s.close(); go('settings'); };
+  s.el.querySelector('[data-notif-settings]').onclick = () => { s.close(); go('settings').then(() => $('#screen-settings [data-section=notifications]')?.scrollIntoView({ block: 'start' })); };
+  s.el.querySelector('[data-photo]').onclick = () => openPhotoEditor();
+  bindList(s.el, () => s.close());
+  markAllRead();
+  const off = on('notifs', () => {
+    if (s.closed) return off();
+    state.notifications.filter((n) => !n.read).forEach((n) => fresh.add(n.id));
+    const box = s.el.querySelector('[data-notifs]');
+    box.innerHTML = listHtml(state.notifications, { fresh });
+    bindList(box, () => s.close());
+    if (state.unread) markAllRead();
+  });
 }
 
 // ---------- navigation ----------
@@ -160,6 +186,7 @@ async function startApp() {
   on('conn', refreshMeButtons);
   on('users', refreshMeButtons);
   on('state', refreshMeButtons);
+  on('notifs', refreshMeButtons);
   on('error', (msg) => toast(msg));
   refreshMeButtons();
 

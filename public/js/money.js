@@ -2,6 +2,7 @@
 import { state, on, op, api, emit, userById, groupById, groupsOn, myGroupOn, today, tripDays, livePlaces } from './store.js';
 import { esc, icon, avatar, openSheet, toast, fmtDay, uid, confirmSheet, debounce } from './ui.js';
 import { meButton } from './main.js';
+import { getTable, savedTable, marketRate, ownRate, setOwnRate, homeCurrency, rememberHome, rememberFrom, savedFrom, niceAmounts, parseAmount } from './fx.js';
 
 const DIGITS = { JPY: 0, KRW: 0, VND: 0, IDR: 0 };
 const digits = (c) => DIGITS[c] ?? 2;
@@ -76,8 +77,12 @@ export function settlePlan(net) {
 const root = () => document.getElementById('screen-money');
 let tab = 'expenses';
 let filter = 'all';
+let withUser = null; // show only expenses between me and this person
+on('money-with', (id) => { withUser = +id; tab = 'expenses'; filter = 'all'; if (isShown()) render(); });
 const isShown = () => !root().hidden;
-['expenses', 'users', 'trip', 'subgroups'].forEach((e) => on(e, () => isShown() && render()));
+// Don't redraw under someone typing in the converter
+const typing = () => tab === 'convert' && root().contains(document.activeElement) && document.activeElement.matches('input');
+['expenses', 'users', 'trip', 'subgroups'].forEach((e) => on(e, () => isShown() && !typing() && render()));
 
 export function showMoney() { render(); }
 
@@ -90,7 +95,9 @@ export function render() {
   const people = state.users.filter((u) => u.id !== me)
     .map((u) => ({ u, v: pair(u.id, me) })) // >0: they owe me
     .filter((x) => Math.abs(x.v) >= 1);
-  const shown = all.filter((e) => filter === 'all' ? true : filter === 'mine' ? (e.paidBy === me || e.shares.some((s) => s.userId === me)) : filter === 'private' ? e.visibility === 'private' : e.kind === 'payment')
+  if (withUser && !userById(withUser)) withUser = null;
+  const between = (e) => (e.paidBy === me && e.shares.some((s) => s.userId === withUser)) || (e.paidBy === withUser && e.shares.some((s) => s.userId === me));
+  const shown = all.filter((e) => !withUser || between(e)).filter((e) => filter === 'all' ? true : filter === 'mine' ? (e.paidBy === me || e.shares.some((s) => s.userId === me)) : filter === 'private' ? e.visibility === 'private' : e.kind === 'payment')
     .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.createdAt - a.createdAt);
   const byDate = {};
   for (const e of shown) (byDate[e.date || ''] ||= []).push(e);
@@ -103,7 +110,14 @@ export function render() {
       <button class="btn small primary" data-add>${icon('plus')}Expense</button>
     </header>
 
-    <section class="money-summary">
+    ${withUser ? (() => {
+      const w = userById(withUser), v = pair(withUser, me);
+      return `<div class="person-banner">${avatar(w)}<span class="grow">Showing expenses between you and <b>${esc(w.name)}</b>.
+        ${v > 0 ? `${esc(w.name)} owes you <b class="num pos">${fmt(v)}</b>.` : v < 0 ? `You owe ${esc(w.name)} <b class="num neg">${fmt(-v)}</b>.` : 'You’re all square.'}</span>
+        ${v ? `<button class="btn small primary" data-settle="${withUser}" data-amount="${v}">${v > 0 ? 'Record payment' : 'Settle up'}</button>` : ''}
+        <button class="btn small" data-clear-with>Show all</button></div>`;
+    })() : ''}
+    <section class="money-summary" ${withUser ? 'hidden' : ''}>
       <div class="money-big ${myNet > 0 ? 'pos' : myNet < 0 ? 'neg' : ''}">
         <span class="label">${myNet > 0 ? 'You are owed' : myNet < 0 ? 'You owe' : 'You’re all square'}</span>
         ${myNet ? `<b class="num">${fmt(Math.abs(myNet))}</b>` : ''}
@@ -115,7 +129,8 @@ export function render() {
 
     <div class="seg" role="group" style="margin:0 14px 12px">
       <button data-tab="expenses" aria-pressed="${tab === 'expenses'}">Expenses</button>
-      <button data-tab="balances" aria-pressed="${tab === 'balances'}">Group balances</button>
+      <button data-tab="balances" aria-pressed="${tab === 'balances'}">Balances</button>
+      <button data-tab="convert" aria-pressed="${tab === 'convert'}">${icon('swap', 'small')}Convert</button>
     </div>
 
     ${tab === 'expenses' ? `
@@ -127,10 +142,11 @@ export function render() {
           <div class="list">${list.map(rowHtml).join('')}</div></section>`).join('')
       : `<div class="empty"><h3>${all.length ? 'Nothing here' : 'No expenses yet'}</h3><p>${all.length ? 'Try another filter.' : 'Add what you paid for, snap the receipt, and Tabi works out who owes whom.'}</p>
          ${all.length ? '' : `<button class="btn primary" data-add>${icon('plus')}Add an expense</button>`}</div>`}
-    ` : balancesHtml(net)}
+    ` : tab === 'balances' ? balancesHtml(net) : '<div data-fx></div>'}
   </div>`;
 
   el.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => openExpense());
+  el.querySelector('[data-clear-with]')?.addEventListener('click', () => { withUser = null; render(); });
   el.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { tab = b.dataset.tab; render(); });
   el.querySelectorAll('[data-filter]').forEach((b) => b.onclick = () => { filter = b.dataset.filter; render(); });
   el.querySelectorAll('[data-open]').forEach((b) => b.onclick = () => openExpense(state.expenses.get(b.dataset.open)));
@@ -142,7 +158,104 @@ export function render() {
     const [from, to, amount] = b.dataset.plan.split(':').map(Number);
     openPayment({ from, to, amount });
   });
+  if (tab === 'convert') renderConverter(el.querySelector('[data-fx]'));
 }
+
+// ---------- currency converter ----------
+// own: null = use your own rate if you've saved one for this pair
+const fx = { from: null, to: null, amount: '1000', own: null, table: savedTable(), loading: false, tried: false };
+const fxCurrencies = () => [...new Set(['EUR', ...(state.config.currencies || ['JPY', 'USD'])])];
+const fmtPlain = (v, c) => new Intl.NumberFormat('en', { style: 'currency', currency: c, maximumFractionDigits: v >= 1000 || digits(c) === 0 ? 0 : 2, minimumFractionDigits: v >= 1000 || digits(c) === 0 ? 0 : 2 }).format(v);
+const rateText = (r) => (r >= 100 ? r.toFixed(1) : r >= 1 ? r.toFixed(3) : r.toPrecision(3));
+
+function renderConverter(box) {
+  if (!box) return;
+  const list = fxCurrencies();
+  fx.from ||= list.includes(savedFrom()) ? savedFrom() : base();
+  fx.to ||= homeCurrency(fx.from, list);
+  if (!fx.tried) { fx.tried = true; refreshRates(); } // once per visit; uses the saved table when it's fresh
+  const market = marketRate(fx.table, fx.from, fx.to);
+  const mine = ownRate(fx.from, fx.to);
+  const ownOn = fx.own ?? !!mine;
+  const useOwn = (ownOn || !market) && mine;
+  const rate = useOwn ? mine : market;
+  const amt = parseAmount(fx.amount);
+  const out = rate && Number.isFinite(amt) ? amt * rate : null;
+  const opts = (sel) => list.map((c) => `<option ${c === sel ? 'selected' : ''}>${c}</option>`).join('');
+  const t = fx.table;
+  const steps = niceAmounts(t, fx.from);
+
+  box.innerHTML = `
+    <section class="fx">
+      <div class="fx-card">
+        <div class="fx-line">
+          <select class="fx-cur" data-fx-from aria-label="Convert from">${opts(fx.from)}</select>
+          <input class="fx-amt num" data-fx-amt inputmode="decimal" enterkeyhint="done" autocomplete="off" value="${esc(fx.amount)}" aria-label="Amount in ${fx.from}">
+        </div>
+        <button class="fx-swap" data-fx-swap aria-label="Swap currencies">${icon('swap')}</button>
+        <div class="fx-line to">
+          <select class="fx-cur" data-fx-to aria-label="Convert to">${opts(fx.to)}</select>
+          <output class="fx-out num" data-fx-out aria-live="polite">${out == null ? '–' : esc(fmtPlain(out, fx.to))}</output>
+        </div>
+      </div>
+      <p class="fx-meta num" data-fx-meta>${rate ? `1 ${fx.from} = ${rateText(rate)} ${fx.to}<span class="dot-sep"></span>1 ${fx.to} = ${rateText(1 / rate)} ${fx.from}` : ''}</p>
+      <p class="fx-source">${fx.loading && !t ? 'Getting today’s rates…'
+        : useOwn ? `Using your own rate.${market ? ` The ECB rate is ${rateText(market)}.` : ''}`
+        : market ? `European Central Bank rate from ${esc(fmtDay(t.date, { day: 'numeric', month: 'short', year: 'numeric' }))}${t.offline ? ', saved on this phone (you’re offline)' : ''}. Card and cash rates are usually 1–3% worse.`
+        : t ? `There’s no ECB rate for ${!t.rates[fx.from] ? fx.from : fx.to}. Enter the rate you were given below.`
+        : 'Rates aren’t available offline until you’ve opened this once with a connection. You can enter your own rate below.'}</p>
+      <p class="err" data-fx-err style="margin:0 16px 8px" ${Number.isNaN(amt) && fx.amount ? '' : 'hidden'}>Type a number, or a sum like 1200+850.</p>
+
+      <div class="chips fx-quick" role="group" aria-label="Quick amounts">${steps.slice(0, 6).map((v) => `<button class="chip num" data-fx-quick="${v}">${esc(fmtPlain(v, fx.from))}</button>`).join('')}</div>
+
+      <div class="card fx-own">
+        <div class="row"><div class="grow"><div class="label">Use my own rate</div><div class="help">For the rate your card, bank or exchange counter actually gave you.</div></div>
+          <label class="switch"><input type="checkbox" data-fx-own ${ownOn ? 'checked' : ''} aria-label="Use my own rate"><span></span></label></div>
+        ${ownOn || !market ? `<div class="row"><span class="num">1 ${fx.from} =</span><input class="input num" data-fx-rate inputmode="decimal" style="width:130px" value="${mine ? esc(String(mine)) : ''}" placeholder="${market ? esc(rateText(market)) : 'rate'}"><span>${fx.to}</span></div>` : ''}
+      </div>
+
+      ${rate ? `<section class="group"><div class="group-head"><h3>Quick reference</h3><span class="line"></span></div>
+        <div class="fx-table">${steps.map((v) => `<div class="fx-tr"><span class="num">${esc(fmtPlain(v, fx.from))}</span><span class="num">${esc(fmtPlain(v * rate, fx.to))}</span></div>`).join('')}</div>
+      </section>` : ''}
+      <p class="hint" style="margin:12px 16px 0">${t?.date && !fx.loading ? `<button class="btn small" data-fx-refresh>${icon('restore')}Update rates</button>` : ''}</p>
+    </section>`;
+
+  const q = (s) => box.querySelector(s);
+  const input = q('[data-fx-amt]');
+  input.oninput = () => {
+    fx.amount = input.value;
+    const v = parseAmount(fx.amount);
+    q('[data-fx-out]').textContent = rate && Number.isFinite(v) ? fmtPlain(v * rate, fx.to) : '–';
+    q('[data-fx-err]').hidden = !(Number.isNaN(v) && fx.amount);
+  };
+  input.onfocus = () => input.select();
+  q('[data-fx-from]').onchange = (e) => { fx.from = e.target.value; fx.own = null; rememberFrom(fx.from); renderConverter(box); };
+  q('[data-fx-to]').onchange = (e) => { fx.to = e.target.value; fx.own = null; rememberHome(fx.to); renderConverter(box); };
+  q('[data-fx-swap]').onclick = () => {
+    const v = parseAmount(fx.amount);
+    if (out != null) fx.amount = String(+out.toFixed(digits(fx.to)));
+    else if (Number.isNaN(v)) fx.amount = '';
+    [fx.from, fx.to] = [fx.to, fx.from];
+    fx.own = null;
+    rememberFrom(fx.from); rememberHome(fx.to);
+    renderConverter(box);
+  };
+  box.querySelectorAll('[data-fx-quick]').forEach((b) => b.onclick = () => { fx.amount = b.dataset.fxQuick; renderConverter(box); });
+  q('[data-fx-own]').onchange = (e) => { fx.own = e.target.checked; if (!fx.own) setOwnRate(fx.from, fx.to, 0); renderConverter(box); if (fx.own) box.querySelector('[data-fx-rate]')?.focus(); };
+  const rateIn = q('[data-fx-rate]');
+  if (rateIn) rateIn.onchange = () => { const v = parseAmount(rateIn.value); setOwnRate(fx.from, fx.to, v > 0 ? v : 0); fx.own = v > 0; renderConverter(box); };
+  q('[data-fx-refresh]')?.addEventListener('click', () => refreshRates(true));
+}
+
+async function refreshRates(force = false) {
+  fx.loading = true;
+  const t = await getTable({ force });
+  fx.loading = false;
+  if (t) fx.table = t;
+  if (force) toast(t?.offline ? 'You’re offline. Using the saved rates.' : t ? 'Rates updated' : 'Couldn’t get rates right now');
+  if (isShown() && tab === 'convert') render();
+}
+on('go-convert', () => { tab = 'convert'; if (isShown()) render(); });
 
 function rowHtml(e) {
   const me = state.me?.id;
@@ -194,7 +307,7 @@ function balancesHtml(net) {
 }
 
 // ---------- settle-up payment ----------
-function openPayment({ from, to, amount }) {
+export function openPayment({ from, to, amount }) {
   const c = base();
   const s = openSheet({
     title: 'Record a payment',
@@ -304,7 +417,12 @@ export function openExpense(existing) {
       d.rate = r.rate;
       $('[data-rate]').value = r.rate;
       $('[data-rate-note]').textContent = r.date ? `rate from ${r.date}` : '';
-    } catch (e) { $('[data-rate-note]').textContent = e.message; }
+    } catch (e) {
+      // Offline: fall back to the rates saved on this device by the converter
+      const t = savedTable(), r = marketRate(t, d.currency, base());
+      if (r && !d.rate) { d.rate = +r.toPrecision(6); $('[data-rate]').value = d.rate; $('[data-rate-note]').textContent = `saved rate from ${t.date}`; }
+      else $('[data-rate-note]').textContent = e.message;
+    }
   };
   $('[data-currency]').onchange = (e) => {
     const amt = $('[data-amount]').value;

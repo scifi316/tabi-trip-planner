@@ -6,10 +6,14 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { resolveLink, extractUrls, myMapsId, fetchMyMapsKml, photonAddress, geocode } from './links.js';
-import { createAuth } from './auth.js';
+import os from 'node:os';
+import { createAuth, parseCookies } from './auth.js';
+import { devPush, devRecent, devSubscribe, startedAt } from './devlog.js';
 import { cleanExpense, CURRENCIES } from './money.js';
+import { createNotifier, prefsOf, cleanPrefs, NOTIFY_KINDS } from './notify.js';
+import { imageSize } from './images.js';
 
-export function createApp({ db, blobs, root, env = process.env, getHealth = () => ({}) }) {
+export function createApp({ db, blobs, root, dataDir = '', env = process.env, getHealth = () => ({}) }) {
   const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
   const CONFIG = {
     styleLight: env.MAP_STYLE_LIGHT || 'https://tiles.openfreemap.org/styles/liberty',
@@ -19,6 +23,13 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
   };
   const UA = 'Tabi-trip-planner/1.0 (self-hosted group itinerary app)';
   const auth = createAuth({ db, env, trustProxy: TRUST_PROXY });
+  const VERSION = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+
+  // Developer console: separate secret (DEV_KEY). Read-only views of the database, live locations,
+  // OwnTracks traffic, outbound calls and server logs. It also lets the holder past the private-link gate.
+  const DEV_KEY = env.DEV_KEY || '';
+  const devToken = DEV_KEY ? crypto.createHmac('sha256', DEV_KEY).update('tabi-dev-v1').digest('base64url').slice(0, 32) : '';
+  const isDev = (req) => { const c = DEV_KEY && parseCookies(req).tabi_dev; return !!c && auth.safeEqual(c, devToken); };
 
   // ---------- helpers ----------
   const now = () => Date.now();
@@ -48,7 +59,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
   const VOTES = new Set(['up', 'down', 'veto']);
   const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#9CAEB7'];
 
-  const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location });
+  const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
   const userCount = () => db.prepare('SELECT COUNT(*) n FROM users').get().n;
   const userIdSet = () => new Set(db.prepare('SELECT id FROM users').all().map((u) => u.id));
@@ -112,7 +123,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     const admin = !!me.is_admin;
     return {
       t: 'state',
-      me: { ...publicUser(me), owntracksToken: me.owntracks_token },
+      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me) },
       trip: tripForClient(user),
       users: listUsers(),
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
@@ -121,7 +132,9 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       locations: listLocations(),
       online: onlineIds(),
       activity: recentActivity(),
-      config: { ...CONFIG, gate: auth.gateEnabled ? auth.gateToken : null },
+      notifications: notifier.list(me.id),
+      unread: notifier.unread(me.id),
+      config: { ...CONFIG, version: VERSION, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -271,6 +284,26 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     return `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${esc(getTrip().name)}</name>${folders}</Document></kml>`;
   }
 
+  // Frankfurter moved to api.frankfurter.dev; the old host still answers, so it's the fallback.
+  async function fxFetch(pathAndQuery) {
+    let last;
+    for (const host of ['https://api.frankfurter.dev/v1', 'https://api.frankfurter.app']) {
+      try {
+        const r = await fetch(host + pathAndQuery, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`rates service returned ${r.status}`);
+        return await r.json();
+      } catch (e) { last = e; }
+    }
+    throw last;
+  }
+
+  const AVATAR_MAX_BYTES = 512 * 1024;
+  // Old profile photos are deleted so they don't take up storage.
+  function dropBlobIfUnused(key) {
+    if (db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(key) || db.prepare('SELECT 1 FROM attachments WHERE blob_key = ?').get(key)) return;
+    blobs.del?.(key).catch(() => {});
+  }
+
   function canSeeAttachment(user, a) {
     if (a.created_by === user.id) return true;
     if (!a.expense_id) return false;
@@ -285,8 +318,29 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     try {
       if (p === '/healthz') return send(res, 200, { ok: true, ...getHealth() });
 
+      // Developer console entry: /dev?devkey=<DEV_KEY> once per device, then /dev
+      if (DEV_KEY && (p === '/dev' || p === '/dev/')) {
+        const k = url.searchParams.get('devkey');
+        if (k) {
+          if (rateLimited(clientIp(req))) return send(res, 429, 'Too many attempts. Wait 10 minutes.');
+          if (!auth.safeEqual(k, DEV_KEY)) { devPush('op', { user: '-', op: 'dev.login', ok: false, error: 'wrong dev key', ip: clientIp(req) }); return send(res, 404, 'Not found'); }
+          addCookie(res, auth.makeCookie(req, 'tabi_dev', devToken, 30 * 86400));
+          if (auth.gateEnabled) addCookie(res, auth.makeCookie(req, 'tabi_gate', auth.gateToken, 400 * 86400));
+          console.log(`[dev] console unlocked from ${clientIp(req)}`);
+          res.writeHead(302, { Location: '/dev', 'Cache-Control': 'no-store', ...res._extraHeaders });
+          return res.end();
+        }
+        if (!isDev(req)) return send(res, 404, 'Not found');
+        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', ...res._extraHeaders });
+        return res.end(fs.readFileSync(path.join(root, 'public/dev.html')));
+      }
+      if (p.startsWith('/api/dev/')) {
+        if (!isDev(req)) return send(res, 404, { error: 'Not found' });
+        return devApi(req, res, url, p);
+      }
+
       // Private-link gate. Without the key the site looks like nothing is there.
-      const gate = auth.checkGate(req, url);
+      const gate = isDev(req) ? { ok: true } : auth.checkGate(req, url);
       if (!gate.ok) return send(res, 404, 'Not found');
       if (gate.setCookie) {
         addCookie(res, gate.setCookie);
@@ -327,7 +381,10 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
         const b = await readBody(req);
         const trip = getTrip();
-        if (!trip.joinCode || String(b.code || '').trim().toUpperCase() !== trip.joinCode) return send(res, 403, { error: 'That invite code is not valid. Ask for a fresh invite link.' });
+        if (!trip.joinCode || String(b.code || '').trim().toUpperCase() !== trip.joinCode) {
+          devPush('op', { user: String(b.name || '').slice(0, 30), op: 'join', ok: false, error: 'bad invite code', ip: clientIp(req) });
+          return send(res, 403, { error: 'That invite code is not valid. Ask for a fresh invite link.' });
+        }
         const name = validName(b.name);
         if (!name) return send(res, 400, { error: 'Enter a name up to 24 characters.' });
         if (String(b.password || '').length < 6) return send(res, 400, { error: 'Use a password with at least 6 characters.' });
@@ -339,6 +396,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const id = Number(r.lastInsertRowid);
         broadcast({ t: 'users', users: listUsers() });
         logActivity(id, `${name} joined the trip`);
+        notifier.notify(listUsers().map((x) => ({ userId: x.id, kinds: ['people'], text: `${name} joined the trip` })), { actorId: id, ref: { type: 'user', id } });
         addCookie(res, auth.create(req, id).setCookie);
         return send(res, 200, { ok: true });
       }
@@ -347,7 +405,11 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
         const b = await readBody(req);
         const u = db.prepare('SELECT * FROM users WHERE name = ?').get(String(b.name || '').trim());
-        if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) return send(res, 401, { error: 'Name or password is wrong.' });
+        if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) {
+          devPush('op', { user: String(b.name || '').slice(0, 30), op: 'login', ok: false, error: u ? 'wrong password' : 'no such name', ip: clientIp(req) });
+          return send(res, 401, { error: 'Name or password is wrong.' });
+        }
+        devPush('op', { user: u.name, op: 'login', ok: true, ip: clientIp(req) });
         addCookie(res, auth.create(req, u.id).setCookie);
         return send(res, 200, { ok: true });
       }
@@ -357,9 +419,17 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const h = String(req.headers.authorization || '');
         const [name, tok] = h.startsWith('Basic ') ? Buffer.from(h.slice(6), 'base64').toString().split(':') : [];
         const u = name && db.prepare('SELECT * FROM users WHERE name = ?').get(name);
-        if (!u || !tok || !u.owntracks_token || tok !== u.owntracks_token) return send(res, 401, { error: 'Bad OwnTracks credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        if (!u || !tok || !u.owntracks_token || tok !== u.owntracks_token) {
+          devPush('owntracks', { user: name || '(none)', result: !h ? 'no-credentials' : !u ? 'unknown-user' : 'bad-token', ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 80) });
+          return send(res, 401, { error: 'Bad OwnTracks credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        }
         const b = await readBody(req);
-        if (b._type === 'location' && u.share_location) {
+        const result = b._type !== 'location' ? `ignored-${b._type || 'unknown'}` : !u.share_location ? 'ignored-sharing-off' : 'stored';
+        devPush('owntracks', {
+          user: u.name, userId: u.id, result, type: b._type, lat: b.lat, lon: b.lon, acc: b.acc, batt: b.batt, vel: b.vel, conn: b.conn,
+          trigger: b.t, tst: b.tst ? b.tst * 1000 : null, device: String(req.headers['x-limit-d'] || b.tid || ''), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 80),
+        });
+        if (result === 'stored') {
           updateLocation(u, { lat: b.lat, lng: b.lon, acc: b.acc, heading: b.cog, speed: b.vel != null ? b.vel / 3.6 : null, batt: b.batt, ts: b.tst ? b.tst * 1000 : now() }, 'owntracks');
         }
         const locs = listLocations();
@@ -463,14 +533,61 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const hit = cache.get(key, 6 * 3600e3);
         if (hit) return send(res, 200, hit);
         try {
-          const r = await fetch(`https://api.frankfurter.app/latest?from=${from}&to=${to}`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
-          const j = await r.json();
+          const j = await fxFetch(`/latest?base=${from}&symbols=${to}`);
           const rate = j.rates?.[to];
           if (!rate) throw new Error('no rate');
           const out = { rate, date: j.date };
           cache.set(key, out);
           return send(res, 200, out);
         } catch { return send(res, 502, { error: 'Could not look up the exchange rate. Type it in instead.' }); }
+      }
+
+      // All rates against EUR (ECB via Frankfurter), for the converter. Cached for 6 hours.
+      if (p === '/api/rates' && req.method === 'GET') {
+        const hit = cache.get('fx:table', 6 * 3600e3);
+        if (hit) return send(res, 200, hit);
+        try {
+          const j = await fxFetch('/latest');
+          const rates = { EUR: 1 };
+          for (const [k, v] of Object.entries(j.rates || {})) if (k in CURRENCIES) rates[k] = v;
+          const out = { base: 'EUR', date: j.date, rates, fetchedAt: now() };
+          cache.set('fx:table', out);
+          return send(res, 200, out);
+        } catch {
+          const old = cache.get('fx:table', 365 * 864e5);
+          if (old) return send(res, 200, { ...old, stale: true });
+          return send(res, 502, { error: 'Could not look up exchange rates right now.' });
+        }
+      }
+
+      // Profile photos: square, at most 640×640, already cropped and resized in the browser.
+      if (p === '/api/avatar' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const old = user.avatar;
+        let key = null;
+        if (req.method === 'POST') {
+          const mime = String(req.headers['content-type'] || '').split(';')[0];
+          const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[mime];
+          if (!ext) return send(res, 415, { error: 'Use a JPEG, PNG or WebP image.' });
+          const buf = await readRaw(req, AVATAR_MAX_BYTES);
+          const size = imageSize(buf);
+          if (!size || size.type !== ext) return send(res, 400, { error: 'That image could not be read.' });
+          if (size.width !== size.height) return send(res, 400, { error: 'Profile photos have to be square.' });
+          if (size.width > 640 || size.width < 64) return send(res, 400, { error: 'Profile photos must be between 64 and 640 pixels wide.' });
+          key = await blobs.put(buf, ext);
+        }
+        db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(key, user.id);
+        broadcast({ t: 'users', users: listUsers() });
+        if (old && old !== key) dropBlobIfUnused(old);
+        return send(res, 200, { ok: true, avatar: key ? `/api/avatars/${key}` : null });
+      }
+      const av = p.match(/^\/api\/avatars\/([a-f0-9]{64}\.(?:jpg|png|webp))$/);
+      if (av && req.method === 'GET') {
+        if (!db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(av[1])) return send(res, 404, { error: 'Not found' });
+        const buf = await blobs.get(av[1]);
+        if (!buf) return send(res, 404, { error: 'Not found' });
+        const type = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }[av[1].split('.').pop()];
+        res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(buf);
       }
 
       // Receipt photos and screenshots
@@ -534,6 +651,9 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
   const clients = new Set();
   const onlineIds = () => [...new Set([...clients].map((c) => c.user.id))];
 
+  const notifier = createNotifier({ db, deliver: (userId, item, unread) => { for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif', item, unread }); } });
+  const notifyUnread = (userId) => { const n = notifier.unread(userId); for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif.unread', unread: n }); };
+
   function sendTo(c, msg) { if (c.ws.readyState === 1) c.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
   function broadcast(msg) { const data = JSON.stringify(msg); for (const c of clients) sendTo(c, data); }
   const broadcastPresence = () => broadcast({ t: 'presence', online: onlineIds() });
@@ -570,8 +690,9 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     const session = auth.resolve(req, url);
     if (!session) return reject(401, 'Unauthorized');
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const client = { ws, user: session.user, sessionHash: session.hash, alive: true };
+      const client = { ws, user: session.user, sessionHash: session.hash, alive: true, since: Date.now(), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 160) };
       clients.add(client);
+      devPush('ws', { user: session.user.name, event: 'connected', ip: client.ip });
       sendTo(client, snapshot(session.user));
       broadcastPresence();
       ws.on('pong', () => { client.alive = true; });
@@ -584,15 +705,17 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (!fresh) { ws.send('{"t":"kicked"}'); return ws.close(); }
         client.user = fresh;
         let result;
+        const t0 = Date.now();
         try {
           result = handleOp(fresh, msg.op, msg.data || {}, client) || { ok: true };
         } catch (e) {
           result = { ok: false, error: e.expose ? e.message : 'That change could not be saved.' };
           if (!e.expose) console.error(e);
         }
+        if (msg.op !== 'loc.update') devPush('op', { user: fresh.name, op: String(msg.op).slice(0, 40), ok: result.ok !== false, error: result.error, ms: Date.now() - t0 });
         if (msg.id) ws.send(JSON.stringify({ t: 'ack', id: msg.id, ...result }));
       });
-      ws.on('close', () => { clients.delete(client); broadcastPresence(); });
+      ws.on('close', () => { clients.delete(client); broadcastPresence(); devPush('ws', { user: client.user.name, event: 'disconnected', ip: client.ip, seconds: Math.round((Date.now() - client.since) / 1000) }); });
     });
   });
 
@@ -604,7 +727,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     }
   }, 30000);
   heartbeat.unref();
-  const purge = setInterval(() => auth.purgeExpired(), 6 * 3600e3);
+  const purge = setInterval(() => { auth.purgeExpired(); notifier.purgeOld(); }, 6 * 3600e3);
   purge.unref();
 
   // ---------- operations ----------
@@ -666,6 +789,109 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       ON CONFLICT(user_id) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, acc=excluded.acc, heading=excluded.heading, speed=excluded.speed,
       batt=COALESCE(excluded.batt, locations.batt), ts=excluded.ts, source=excluded.source`).run(user.id, loc.lat, loc.lng, loc.acc, loc.heading, loc.speed, loc.batt, loc.ts, source);
     broadcast({ t: 'loc', userId: user.id, loc });
+    devPush('loc', { userId: user.id, user: user.name, source, lat: loc.lat, lng: loc.lng, acc: loc.acc, batt: loc.batt, speed: loc.speed, at: loc.ts, lagMs: Date.now() - loc.ts });
+  }
+
+  // ---------- notification wording ----------
+  const nameOf = (id) => db.prepare('SELECT name FROM users WHERE id = ?').get(id)?.name || 'Someone';
+  const allUserIds = () => db.prepare('SELECT id FROM users').all().map((u) => u.id);
+  const membersOf = (gid) => db.prepare('SELECT user_id FROM subgroup_members WHERE subgroup_id = ?').all(gid).map((m) => m.user_id);
+  const fmtMoney = (minor, cur) => {
+    const d = CURRENCIES[cur] ?? 2;
+    return new Intl.NumberFormat('en', { style: 'currency', currency: cur, minimumFractionDigits: d, maximumFractionDigits: d }).format(minor / 10 ** d);
+  };
+  const fmtDay = (d) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(d + 'T00:00:00Z'));
+  const fmtRange = (a, b) => (!a ? '' : !b || a === b ? fmtDay(a) : `${fmtDay(a)} to ${fmtDay(b)}`);
+  const tripToday = () => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: getTrip().timezone || 'Asia/Tokyo' }).format(new Date()); } catch { return new Date().toISOString().slice(0, 10); } };
+
+  // A place changed from `b` to `a` (raw rows; b null for a new place). Tells the person who added it,
+  // admins when it's removed, and anyone whose plan (a confirmed stop from today on) it touches.
+  function placeNews(actor, b, a) {
+    if (!a) return;
+    const t = tripToday();
+    const inPlan = (r) => !!r && !r.removed_at && r.status === 'confirmed' && !!r.day && r.day >= t;
+    const sees = (r, uid) => !r.group_id || membersOf(r.group_id).includes(uid);
+    const who = actor?.name;
+    const n = a.name;
+    let mine = null, removed = null, plan = null;
+    if (b && !b.removed_at && a.removed_at) {
+      mine = `${who} removed ${n}, which you added`;
+      removed = `${who} removed ${n}. It’s in Previously interested.`;
+    } else if (b?.removed_at && !a.removed_at) mine = `${who} brought back ${n}`;
+    else if (b && a.status !== b.status && (a.status === 'confirmed' || a.status === 'vetoed')) {
+      mine = who ? `${who} ${a.status} ${n}, which you added` : `${n}, which you added, was ${a.status} by votes`;
+    }
+    const wasP = inPlan(b), isP = inPlan(a);
+    const at = (r) => `${fmtDay(r.day)}${r.time ? ` at ${r.time}` : ''}`;
+    if (!wasP && isP) plan = who ? `${who} added ${n} to the plan for ${at(a)}` : `${n} is on the plan for ${at(a)}, confirmed by votes`;
+    else if (wasP && !isP) {
+      if (a.removed_at) plan = `${who} removed ${n} from the plan for ${fmtDay(b.day)}`;
+      else if (a.status === 'vetoed') plan = `${who || 'Votes'} vetoed ${n}. It’s off the plan for ${fmtDay(b.day)}.`;
+      else if (a.status === 'visited' || a.status === 'skipped') plan = null;
+      else if (!a.day) plan = `${who} unscheduled ${n}`;
+      else plan = `${who} took ${n} off the plan for ${fmtDay(b.day)}`;
+    } else if (wasP && isP) {
+      if (a.day !== b.day) plan = `${who} moved ${n} to ${at(a)}`;
+      else if (a.time !== b.time) plan = a.time ? `${who} set ${n} for ${at(a)}` : `${who} cleared the time for ${n} on ${fmtDay(a.day)}`;
+    }
+    if (!mine && !removed && !plan) return;
+    const admins = new Set(db.prepare('SELECT id FROM users WHERE is_admin = 1').all().map((u) => u.id));
+    const out = [];
+    for (const uid of allUserIds()) {
+      const kinds = [], text = {};
+      if (mine && a.created_by === uid) { kinds.push('myPlaces'); text.myPlaces = mine; }
+      if (removed && admins.has(uid)) { kinds.push('removed'); text.removed = removed; }
+      if (plan && ((b && wasP && sees(b, uid)) || (isP && sees(a, uid)))) { kinds.push('plan'); text.plan = plan; }
+      if (kinds.length) out.push({ userId: uid, kinds, text });
+    }
+    notifier.notify(out, { actorId: actor?.id ?? null, ref: { type: 'place', id: a.id } });
+  }
+
+  // How an expense leaves someone: >0 they're owed (they paid), <0 they owe.
+  const position = (e, uid) => {
+    if (!e) return 0;
+    const share = e.shares.find((x) => x.userId === uid)?.amount || 0;
+    return e.paidBy === uid ? e.amount - share : -share;
+  };
+  const involved = (e) => (e ? [e.paidBy, ...e.shares.map((x) => x.userId)] : []);
+
+  function moneyNews(actor, b, a, { deleted = false } = {}) {
+    const e = a || b;
+    if (!e) return;
+    const who = actor.name;
+    const out = [];
+    const people = [...new Set([...involved(b), ...involved(a)])];
+    if (e.kind === 'payment') {
+      const from = e.paidBy, to = e.shares[0]?.userId, amt = fmtMoney(e.amount, e.currency);
+      for (const uid of people) {
+        let text;
+        if (deleted) text = `${who} deleted the ${amt} payment between you and ${nameOf(uid === from ? to : from)}`;
+        else if (b) { if (b.amount === a.amount && b.paidBy === a.paidBy) continue; text = `${who} changed a payment between you and ${nameOf(uid === from ? to : from)} to ${amt}`; }
+        else if (uid === to) text = actor.id === from ? `${who} paid you ${amt}` : `${who} recorded that ${nameOf(from)} paid you ${amt}`;
+        else text = actor.id === to ? `${who} recorded your payment of ${amt}` : `${who} recorded that you paid ${nameOf(to)} ${amt}`;
+        out.push({ userId: uid, kinds: ['payments'], text });
+      }
+    } else {
+      const payerName = (x) => (x.paidBy === actor.id ? 'them' : nameOf(x.paidBy));
+      for (const uid of people) {
+        const pos = deleted ? 0 : position(a, uid), was = position(b, uid);
+        let text;
+        if (deleted) text = `${who} deleted ${e.title}`;
+        else if (!b) {
+          if (uid === a.paidBy) text = `${who} added ${a.title}, which you paid for${pos > 0 ? `. You’re owed ${fmtMoney(pos, a.currency)}.` : ''}`;
+          else if (!pos) continue;
+          else text = `${who} added ${a.title}. You owe ${payerName(a)} ${fmtMoney(-pos, a.currency)}.`;
+        } else {
+          if (pos === was && a.paidBy === b.paidBy && a.currency === b.currency) continue;
+          if (!involved(a).includes(uid)) text = `${who} took you out of ${a.title}`;
+          else if (pos > 0) text = `${who} changed ${a.title}. You’re now owed ${fmtMoney(pos, a.currency)}.`;
+          else if (pos < 0) text = `${who} changed ${a.title}. You now owe ${payerName(a)} ${fmtMoney(-pos, a.currency)}.`;
+          else text = `${who} changed ${a.title}. You don’t owe anything for it now.`;
+        }
+        out.push({ userId: uid, kinds: ['expenses'], text });
+      }
+    }
+    notifier.notify(out, { actorId: actor.id, ref: { type: 'expense', id: e.id } });
   }
 
   const STATUS_WORDS = { suggested: 'moved back to suggested', maybe: 'marked as maybe', confirmed: 'confirmed', visited: 'marked as visited', skipped: 'skipped', vetoed: 'vetoed' };
@@ -677,7 +903,13 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       // ---- places ----
       case 'place.add': {
         const place = insertPlace(user, d.place || {});
-        if (place) { broadcastPlace(place.id); logActivity(user.id, `${user.name} added ${place.name}`); }
+        if (place) {
+          broadcastPlace(place.id);
+          logActivity(user.id, `${user.name} added ${place.name}`);
+          notifier.notify(allUserIds().map((uid) => ({ userId: uid, kinds: ['newPlaces'], merge: 'count', text: (k) => (k > 1 ? `${user.name} added ${k} places` : `${user.name} added ${place.name}`) })),
+            { actorId: user.id, ref: { type: 'adds', id: null } });
+          placeNews(user, null, db.prepare('SELECT * FROM places WHERE id = ?').get(place.id));
+        }
         return { ok: true };
       }
       case 'place.bulk': {
@@ -685,7 +917,9 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const added = tx(() => list.map((item) => { try { return insertPlace(user, item); } catch { return null; } }).filter(Boolean));
         if (added.length) {
           broadcastPlaces(added);
-          logActivity(user.id, `${user.name} imported ${added.length} place${added.length === 1 ? '' : 's'}${d.source ? ` from ${String(d.source).slice(0, 80)}` : ''}`);
+          const what = `${user.name} imported ${added.length} place${added.length === 1 ? '' : 's'}${d.source ? ` from ${String(d.source).slice(0, 80)}` : ''}`;
+          logActivity(user.id, what);
+          notifier.notify(allUserIds().map((uid) => ({ userId: uid, kinds: ['newPlaces'], text: what })), { actorId: user.id, ref: { type: 'import', id: null } });
         }
         return { ok: true, added: added.length };
       }
@@ -703,6 +937,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
           logActivity(user.id, patch.day ? `${user.name} moved ${p.name} to ${patch.day}` : `${user.name} unscheduled ${p.name}`);
         }
         broadcastPlace(d.id);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.reorder': {
@@ -718,6 +953,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         db.prepare('UPDATE places SET removed_at = ?, removed_by = ?, updated_at = ? WHERE id = ?').run(now(), user.id, now(), d.id);
         broadcastPlace(d.id);
         logActivity(user.id, `${user.name} removed ${row.name}`);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.restore': {
@@ -727,6 +963,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         db.prepare('UPDATE places SET removed_at = NULL, removed_by = NULL, status = CASE WHEN status = \'vetoed\' THEN \'suggested\' ELSE status END, updated_at = ? WHERE id = ?').run(now(), d.id);
         broadcastPlace(d.id);
         logActivity(user.id, `${user.name} brought back ${row.name}`);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.purge': {
@@ -750,6 +987,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (d.value === 'veto') logActivity(user.id, `${user.name} vetoed ${row.name}`);
         if (changed === 'confirmed') logActivity(null, `${row.name} was confirmed by votes`);
         broadcastPlace(d.id);
+        if (changed) placeNews(changed === 'vetoed' ? user : null, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
 
@@ -766,6 +1004,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const ids = userIdSet();
         const members = [...new Set((g.memberIds || []).map(Number))].filter((id) => ids.has(id));
         const existed = db.prepare('SELECT * FROM subgroups WHERE id = ?').get(g.id);
+        const before = existed ? membersOf(g.id) : [];
         tx(() => {
           if (existed) db.prepare('UPDATE subgroups SET name = ?, color = ?, start_day = ?, end_day = ? WHERE id = ?').run(name, color, start, end, g.id);
           else db.prepare('INSERT INTO subgroups(id, name, color, start_day, end_day, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(g.id, name, color, start, end, user.id, now());
@@ -775,6 +1014,12 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         });
         broadcastGroups();
         logActivity(user.id, existed ? `${user.name} updated the subgroup ${name}` : `${user.name} made a subgroup: ${name}`);
+        const range = fmtRange(start, end);
+        const changed = existed && (existed.name !== name || existed.start_day !== start || existed.end_day !== end);
+        notifier.notify(members.filter((m) => !before.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} added you to ${name}${range ? ` for ${range}` : ''}` }))
+          .concat(before.filter((m) => !members.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} took you out of ${name}` })))
+          .concat(changed ? members.filter((m) => before.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} changed ${name}${range ? `: now ${range}` : ''}` })) : []),
+        { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
       case 'group.member': {
@@ -786,12 +1031,16 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         else db.prepare('DELETE FROM subgroup_members WHERE subgroup_id = ? AND user_id = ?').run(g.id, target.id);
         broadcastGroups();
         logActivity(user.id, d.on ? `${user.name} added ${target.name} to ${g.name}` : `${user.name} took ${target.name} out of ${g.name}`);
+        const range = fmtRange(g.start_day, g.end_day);
+        notifier.notify([{ userId: target.id, kinds: ['groups'], text: d.on ? `${user.name} added you to ${g.name}${range ? ` for ${range}` : ''}` : `${user.name} took you out of ${g.name}` }],
+          { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
       case 'group.delete': {
         const g = db.prepare('SELECT * FROM subgroups WHERE id = ?').get(d.id);
         if (!g) return { ok: true };
         const affected = db.prepare('SELECT id FROM places WHERE group_id = ?').all(g.id).map((r) => r.id);
+        const wereIn = membersOf(g.id);
         tx(() => {
           db.prepare('UPDATE places SET group_id = NULL WHERE group_id = ?').run(g.id);
           db.prepare('UPDATE expenses SET group_id = NULL WHERE group_id = ?').run(g.id);
@@ -800,6 +1049,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         broadcastGroups();
         if (affected.length) broadcastPlaces(affected.map(getPlace).filter(Boolean));
         logActivity(user.id, `${user.name} ended the subgroup ${g.name}`);
+        notifier.notify(wereIn.map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} ended the subgroup ${g.name}` })), { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
 
@@ -833,6 +1083,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
           e.attachmentIds.forEach((aid) => { const a = db.prepare('SELECT * FROM attachments WHERE id = ?').get(aid); if (a && (a.created_by === user.id || prevIds.has(aid))) link.run(e.id, aid, user.id, e.id); });
         });
         broadcastExpense(e.id);
+        moneyNews(user, existing, getExpense(e.id));
         if (e.visibility === 'group' && !existing) {
           const payer = db.prepare('SELECT name FROM users WHERE id = ?').get(e.paidBy)?.name;
           logActivity(user.id, e.kind === 'payment' ? `${payer} paid back ${db.prepare('SELECT name FROM users WHERE id = ?').get(e.shares[0].userId)?.name}` : `${user.name} added ${e.title}`);
@@ -846,6 +1097,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         db.prepare('UPDATE expenses SET deleted_at = ?, updated_by = ? WHERE id = ?').run(now(), user.id, d.id);
         broadcast({ t: 'expense.del', id: d.id });
         if (e.visibility === 'group') logActivity(user.id, `${user.name} deleted ${e.title}`);
+        moneyNews(user, e, null, { deleted: true });
         return { ok: true };
       }
 
@@ -887,6 +1139,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (!target) return { ok: true };
         auth.revokeUser(target.id);
         db.prepare('DELETE FROM users WHERE id = ?').run(target.id);
+        if (target.avatar) dropBlobIfUnused(target.avatar);
         for (const c of clients) if (c.user.id === target.id) { sendTo(c, { t: 'kicked' }); c.ws.close(); }
         broadcast({ t: 'users', users: listUsers() });
         broadcast({ t: 'loc', userId: target.id, loc: null });
@@ -900,7 +1153,25 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(d.on ? 1 : 0, +d.id);
         broadcast({ t: 'users', users: listUsers() });
         refreshClientsOf(+d.id); // they gain or lose "Previously interested"
+        notifier.notify([{ userId: +d.id, kinds: ['people'], text: d.on ? `${user.name} made you a trip admin` : `${user.name} removed your trip admin role` }], { actorId: user.id, ref: { type: 'user', id: +d.id } });
         return { ok: true };
+      }
+
+      // ---- notifications ----
+      case 'notif.read': {
+        const n = notifier.markRead(user.id, Array.isArray(d.ids) ? d.ids : undefined);
+        notifyUnread(user.id);
+        return { ok: true, unread: n };
+      }
+      case 'notif.clear': {
+        notifier.clear(user.id);
+        return { ok: true, notifications: notifier.list(user.id), unread: notifier.unread(user.id) };
+      }
+      case 'notif.prefs': {
+        const prefs = cleanPrefs(d.prefs, prefsOf(user));
+        db.prepare('UPDATE users SET notify_prefs = ? WHERE id = ?').run(JSON.stringify(prefs), user.id);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'notif.prefs', prefs });
+        return { ok: true, prefs };
       }
 
       // ---- trip ----
@@ -933,6 +1204,65 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       default:
         fail('Unknown action');
     }
+  }
+
+  // ---------- developer console API (read-only) ----------
+  function devApi(req, res, url, p) {
+    const count = (sql) => db.prepare(sql).get().n;
+    const names = Object.fromEntries(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
+    if (p === '/api/dev/stream') return devSubscribe(req, res);
+    if (p === '/api/dev/events') {
+      const kind = url.searchParams.get('kind') || 'log';
+      return send(res, 200, { events: devRecent(kind, { since: +url.searchParams.get('since') || 0, limit: 1000 }) });
+    }
+    if (p === '/api/dev/overview') {
+      const fileSize = (f) => { try { return fs.statSync(path.join(dataDir, f)).size; } catch { return 0; } };
+      const statusCounts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM places WHERE removed_at IS NULL GROUP BY status').all().map((r) => [r.status, r.n]));
+      const mem = process.memoryUsage();
+      return send(res, 200, {
+        version: VERSION, node: process.version, host: os.hostname(), health: getHealth(),
+        uptimeSec: Math.round((Date.now() - startedAt) / 1000), memory: { rss: mem.rss, heapUsed: mem.heapUsed }, load: os.loadavg(),
+        systemMemory: { total: os.totalmem(), free: os.freemem() },
+        db: { bytes: fileSize('tabi.db') + fileSize('tabi.db-wal') },
+        counts: {
+          users: count('SELECT COUNT(*) n FROM users'), sessions: count('SELECT COUNT(*) n FROM sessions'),
+          places: count('SELECT COUNT(*) n FROM places WHERE removed_at IS NULL'), removed: count('SELECT COUNT(*) n FROM places WHERE removed_at IS NOT NULL'),
+          byStatus: statusCounts, votes: count('SELECT COUNT(*) n FROM votes'), subgroups: count('SELECT COUNT(*) n FROM subgroups'),
+          expenses: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'expense'"),
+          privateExpenses: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND visibility = 'private'"),
+          payments: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'payment'"),
+          attachments: count('SELECT COUNT(*) n FROM attachments'), attachmentBytes: db.prepare('SELECT COALESCE(SUM(bytes),0) n FROM attachments').get().n,
+          geocache: count('SELECT COUNT(*) n FROM geocache'), activity: count('SELECT COUNT(*) n FROM activity'),
+          notifications: count('SELECT COUNT(*) n FROM notifications'), unreadNotifications: count('SELECT COUNT(*) n FROM notifications WHERE read_at IS NULL'),
+          profilePhotos: count('SELECT COUNT(*) n FROM users WHERE avatar IS NOT NULL'),
+        },
+        clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua })),
+        trip: { ...tripForClient(null), joinCode: undefined },
+        config: CONFIG,
+        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180) },
+      });
+    }
+    if (p === '/api/dev/people') {
+      const lastOt = {};
+      for (const e of devRecent('owntracks', { limit: 300 })) if (e.userId) lastOt[e.userId] = e;
+      const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
+      return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
+        id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
+        owntracksConfigured: !!u.owntracks_token, lastOwnTracks: lastOt[u.id] ? { ts: lastOt[u.id].ts, result: lastOt[u.id].result } : null,
+        location: locs[u.id] ? { lat: locs[u.id].lat, lng: locs[u.id].lng, acc: locs[u.id].acc, batt: locs[u.id].batt, ts: locs[u.id].ts, source: locs[u.id].source } : null,
+        sessions: db.prepare('SELECT COUNT(*) n, MAX(last_seen) last FROM sessions WHERE user_id = ?').get(u.id),
+        online: [...clients].some((c) => c.user.id === u.id),
+        groups: listSubgroups().filter((g) => g.memberIds.includes(u.id)).map((g) => g.name),
+      })) });
+    }
+    if (p === '/api/dev/places') {
+      return send(res, 200, { places: db.prepare('SELECT * FROM places ORDER BY day, sort').all().map((r) => {
+        const pl = placeRow(r);
+        return { ...pl, createdByName: names[pl.createdBy] || null, removedByName: names[pl.removedBy] || null,
+          votesByName: Object.fromEntries(Object.entries(pl.votes).map(([k, v]) => [names[k] || k, v])) };
+      }), subgroups: listSubgroups() });
+    }
+    return send(res, 404, { error: 'Not found' });
   }
 
   return {

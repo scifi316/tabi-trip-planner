@@ -24,7 +24,9 @@ export function initials(name = '?') {
 }
 export function avatar(user, cls = '') {
   if (!user) return `<span class="avatar ${cls}" style="background:var(--surface-3);color:var(--ink-2)">?</span>`;
-  return `<span class="avatar ${cls}" style="background:${esc(user.color)}" title="${esc(user.name)}">${esc(initials(user.name))}</span>`;
+  // Initials sit underneath the photo, so a photo that fails to load falls back to them.
+  const photo = user.avatar ? `<img src="${esc(user.avatar)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : '';
+  return `<span class="avatar ${cls}" style="background:${esc(user.color)}" title="${esc(user.name)}">${esc(initials(user.name))}${photo}</span>`;
 }
 
 export function uid() {

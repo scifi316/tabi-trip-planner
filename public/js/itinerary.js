@@ -1,5 +1,6 @@
 // Itinerary / calendar screen: day picker, status filters, grouped lists, voting and ordering.
-import { state, on, emit, op, tripDays, effectiveStatus, voteCounts, byPlan, dayStops, today, groupById, groupsOn } from './store.js';
+import { state, on, emit, op, tripDays, effectiveStatus, voteCounts, byPlan, dayStops, today, groupById, groupsOn, userById, personSees } from './store.js';
+import { avatar } from './ui.js';
 import { openGroups } from './groups.js';
 import { esc, icon, STATUS, STATUS_ORDER, fmtDay, dayParts, toast } from './ui.js';
 import { openPlace } from './place.js';
@@ -11,9 +12,11 @@ let day = 'all';     // 'all' | 'none' | YYYY-MM-DD
 let filter = 'all';  // 'all' | status | 'missed'
 let reordering = false;
 let who = 'all';     // 'all' | subgroup id
+let person = null;   // user id: show only that person's plan
 const collapsed = new Set(['vetoed']);
 
 on('itin-day', (d) => { day = d || 'all'; filter = 'all'; render(); });
+on('itin-person', (id) => { person = +id; day = 'all'; filter = 'all'; who = 'all'; reordering = false; render(); });
 on('places', () => isShown() && render());
 on('trip', () => isShown() && render());
 on('users', () => isShown() && render());
@@ -39,9 +42,11 @@ export function render() {
   const all = everything.filter((p) => !p.removedAt);
   const dayGroups = day !== 'all' && day !== 'none' ? groupsOn(day) : [];
   if (who !== 'all' && !dayGroups.some((g) => g.id === who)) who = 'all';
+  if (person && !userById(person)) person = null;
   const inDay = everything
     .filter((p) => day === 'all' ? true : day === 'none' ? !p.day : p.day === day)
-    .filter((p) => who === 'all' || !p.groupId || p.groupId === who);
+    .filter((p) => who === 'all' || !p.groupId || p.groupId === who)
+    .filter((p) => !person || personSees(p, person));
   const counts = { all: inDay.length };
   for (const p of inDay) counts[groupOf(p)] = (counts[groupOf(p)] || 0) + 1;
   const shown = inDay.filter((p) => filter === 'all' ? !p.removedAt : groupOf(p) === filter);
@@ -72,7 +77,9 @@ export function render() {
           ${k !== 'all' ? `<span class="sw" style="--sw:${STATUS[k].color}"></span>` : ''}${label}<span class="n">${counts[k] || 0}</span></button>`).join('')}
       </div>
 
-      ${dayGroups.length ? `<div class="chips" role="group" aria-label="Whose plan">
+      ${person ? `<div class="person-banner">${avatar(userById(person))}<span class="grow">Showing <b>${esc(userById(person).name)}</b>’s plan: stops for everyone, plus their subgroup’s.</span>
+        <button class="btn small" data-clear-person>Show everyone’s</button></div>` : ''}
+      ${dayGroups.length && !person ? `<div class="chips" role="group" aria-label="Whose plan">
         <button class="chip" data-who="all" aria-pressed="${who === 'all'}">${icon('users', 'small')}Everyone</button>
         ${dayGroups.map((g) => `<button class="chip" data-who="${g.id}" aria-pressed="${who === g.id}"><span class="sw" style="--sw:${esc(g.color)}"></span>${esc(g.name)}<span class="n">${g.memberIds.length}</span></button>`).join('')}
         <button class="chip" data-groups>Edit groups</button>
@@ -111,7 +118,7 @@ export function render() {
 
 function groupHtml(title, items, { key, color, line, dayKey }) {
   const isCollapsed = collapsed.has(key);
-  const stops = day !== 'all' && day !== 'none' ? dayStops(day, who === 'all' ? null : who) : null;
+  const stops = day !== 'all' && day !== 'none' ? planStops() : null;
   const canReorder = line && items.length > 1;
   return `
     <section class="group">
@@ -172,6 +179,7 @@ function bind(el) {
   el.querySelector('[data-reorder]')?.addEventListener('click', () => { reordering = !reordering; render(); });
   el.querySelectorAll('[data-who]').forEach((b) => b.onclick = () => { who = b.dataset.who; reordering = false; render(); });
   el.querySelector('[data-groups]')?.addEventListener('click', () => openGroups());
+  el.querySelector('[data-clear-person]')?.addEventListener('click', () => { person = null; render(); });
   el.querySelector('[data-pick]')?.addEventListener('click', () => { const d = day; day = 'none'; filter = 'all'; render(); pickHint(d); });
   el.querySelectorAll('[data-vote]').forEach((b) => b.onclick = (e) => {
     e.stopPropagation();
@@ -185,13 +193,19 @@ function bind(el) {
     const id = b.closest('[data-id]').dataset.id;
     // Swap with the neighbour shown on screen (other subgroups' stops keep their places)
     const ids = dayStops(day).map((s) => s.place.id);
-    const shownIds = dayStops(day, who === 'all' ? null : who).map((s) => s.place.id);
+    const shownIds = planStops().map((s) => s.place.id);
     const k = shownIds.indexOf(id), other = shownIds[k + +b.dataset.move];
     if (k < 0 || !other) return;
     const i = ids.indexOf(id), j = ids.indexOf(other);
     [ids[i], ids[j]] = [ids[j], ids[i]];
     op('place.reorder', { day, ids });
   });
+}
+
+// Stops on the selected day's line, as currently filtered (subgroup chip or one person's plan)
+function planStops() {
+  const s = dayStops(day, who === 'all' ? null : who);
+  return person ? s.filter((x) => personSees(x.place, person)) : s;
 }
 
 function pickHint(d) { toast(`Open a place and set its day to ${fmtDay(d)}`); }

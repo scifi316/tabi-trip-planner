@@ -17,9 +17,13 @@ export function createBlobStore(dataDir, s3) {
       if (!fs.existsSync(file)) fs.writeFileSync(file, buf);
       if (s3) {
         const exists = await s3.head(`blobs/${key}`).catch(() => null);
-        if (!exists) await s3.put(`blobs/${key}`, buf, { contentType: ext === 'png' ? 'image/png' : 'image/jpeg' });
+        if (!exists) await s3.put(`blobs/${key}`, buf, { contentType: { png: 'image/png', webp: 'image/webp' }[ext] || 'image/jpeg' });
       }
       return key;
+    },
+    async del(key) {
+      try { fs.unlinkSync(local(key)); } catch { /* already gone */ }
+      if (s3) await s3.del(`blobs/${key}`).catch(() => {});
     },
     async get(key) {
       const file = local(key);

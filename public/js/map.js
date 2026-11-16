@@ -2,6 +2,7 @@
 import * as maplibregl from '/vendor/maplibre-gl/maplibre-gl.mjs';
 import { state, on, emit, api, userById, groupById, groupsOn, myGroupOn, dayStops, defaultDay, tripDays, effectiveStatus, today } from './store.js';
 import { openGroups, groupWhere } from './groups.js';
+import { openFriends, openFriend } from './friends.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
@@ -65,13 +66,14 @@ export function initMap() {
     style: styleUrl,
     bounds: JAPAN,
     fitBoundsOptions: { padding: 20 },
-    attributionControl: { compact: true },
+    attributionControl: false, // added bottom-left below, clear of the Add button
     maxPitch: 0,
     dragRotate: false,
     localIdeographFontFamily: '"Hiragino Sans", "Noto Sans JP", "Noto Sans CJK JP", "Yu Gothic", sans-serif',
   });
   map.touchZoomRotate.disableRotation();
-  map.on('style.load', applyLabelLanguage);
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
+  map.on('style.load', () => { applyLabelLanguage(); drawAccuracy(); });
   let warned = false;
   map.on('error', (e) => {
     // Style couldn't load (offline and not cached): show a plain background so markers still work.
@@ -81,7 +83,7 @@ export function initMap() {
       if (!warned) { warned = true; toast('Map tiles are not saved for offline use here yet. Pins and friends still show.'); }
     }
   });
-  map.on('click', () => { closePeekSheets(); hideLayers(); hideResults(); });
+  map.on('click', () => { closePeekSheets(); hideLayers(); hideResults(); if (accCircle) { accCircle = null; drawAccuracy(); } });
 
   setupLongPress();
   setupSearch();
@@ -101,6 +103,14 @@ export function initMap() {
     setTimeout(() => openPlace(id), 50);
   });
   on('fit-all', fitAll);
+  on('focus-friend', focusFriend);
+  on('fit-friends', fitFriends);
+  on('locations', () => {
+    if (!accCircle) return;
+    const l = state.locations[accCircle.userId];
+    if (!l) accCircle = null; else Object.assign(accCircle, { lng: l.lng, lat: l.lat, acc: l.acc || 0 }); // follow them as they move
+    drawAccuracy();
+  });
   on('strip-day', (d) => { if (d !== stripDay) stripGroup = undefined; stripDay = d; renderStrip(); renderPlaces(); renderFriends(); });
   on('subgroups', () => { renderStrip(); renderPlaces(); renderFriends(); });
   on('focus-group', (id) => {
@@ -211,6 +221,9 @@ function renderFriends() {
   const seen = new Set();
   const dayGroups = groupsOn(stripDay || today());
   const groupOf = (id) => dayGroups.find((g) => g.memberIds.includes(+id));
+  const others = state.users.filter((u) => u.id !== state.me?.id);
+  const liveCount = others.filter((u) => state.locations[u.id] && Date.now() - state.locations[u.id].ts < 15 * 60e3).length;
+  if (others.length) chips.push(`<button class="friend-chip friends-btn" data-friends aria-label="Friends: ${liveCount} sharing live">${icon('users', 'small')}<span>Friends</span>${liveCount ? `<span class="age num">${liveCount} live</span>` : ''}</button>`);
   for (const g of dayGroups) {
     chips.push(`<button class="friend-chip group-chip" data-group="${g.id}" style="--g:${esc(g.color)}" aria-pressed="${currentGroup() === g.id}"><span class="group-dot"></span><span>${esc(g.name)}</span><span class="age num">${g.memberIds.length}</span></button>`);
   }
@@ -223,34 +236,79 @@ function renderFriends() {
     if (!fm) {
       const el = document.createElement('div');
       el.className = 'friend-marker';
-      el.addEventListener('click', (e) => { e.stopPropagation(); friendInfo(u.id); });
+      el.addEventListener('click', (e) => { e.stopPropagation(); openFriend(u.id, { pinpoint: true }); });
       fm = { el, marker: new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([loc.lng, loc.lat]).addTo(map) };
       friendMarkers.set(u.id, fm);
     }
     fm.marker.setLngLat([loc.lng, loc.lat]);
     fm.el.classList.toggle('stale', stale);
     const ug = groupOf(u.id);
-    fm.el.innerHTML = `<div class="bubble" style="background:${esc(u.color)}${ug ? `;border-color:${esc(ug.color)}` : ''}">${esc(initials(u.name))}</div><div class="tail"></div><div class="label">${esc(u.name)}${stale ? ` <span class="faint">${ago(loc.ts)}</span>` : ''}</div>`;
+    fm.el.innerHTML = `<div class="bubble" style="background:${esc(u.color)}${ug ? `;border-color:${esc(ug.color)}` : ''}">${esc(initials(u.name))}${u.avatar ? `<img src="${esc(u.avatar)}" alt="" onerror="this.remove()">` : ''}</div><div class="tail"></div><div class="label">${esc(u.name)}${stale ? ` <span class="faint">${ago(loc.ts)}</span>` : ''}</div>`;
     chips.push(`<button class="friend-chip ${stale ? 'stale' : ''}" data-friend="${u.id}">${avatar(u)}<span>${esc(u.name)}</span><span class="age">${ago(loc.ts)}</span></button>`);
   }
   for (const [id, fm] of friendMarkers) if (!seen.has(id)) { fm.marker.remove(); friendMarkers.delete(id); }
   chips.push(`<button class="friend-chip" data-groups aria-label="Subgroups">${icon('users', 'small')}<span>${dayGroups.length ? 'Groups' : 'Split up'}</span></button>`);
   row.innerHTML = chips.join('');
   row.querySelector('[data-groups]').onclick = () => openGroups();
+  row.querySelector('[data-friends]')?.addEventListener('click', () => openFriends());
   row.querySelectorAll('[data-group]').forEach((b) => b.onclick = () => emit('focus-group', b.dataset.group));
-  row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => {
-    const loc = state.locations[b.dataset.friend];
-    if (loc) map.flyTo({ center: [loc.lng, loc.lat], zoom: Math.max(map.getZoom(), 15), duration: 700 });
-  });
+  row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => openFriend(+b.dataset.friend, { pinpoint: true }));
 }
 
-function friendInfo(uid) {
-  const u = userById(uid), loc = state.locations[uid];
-  if (!u || !loc) return;
-  const bits = [`Updated ${ago(loc.ts)}`];
-  if (loc.acc) bits.push(`within ${Math.round(loc.acc)} m`);
-  if (loc.batt != null) bits.push(`battery ${loc.batt}%`);
-  toast(`${u.name}: ${bits.join(', ')}`, { action: 'Directions', onAction: () => open(`https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}&travelmode=walking`, '_blank') });
+// Pinpoint a friend: fly in close, draw how accurate their fix is, and pulse their bubble.
+let accCircle = null; // { lng, lat, acc, color }
+function circlePolygon(lng, lat, m) {
+  const pts = [];
+  for (let i = 0; i <= 64; i++) {
+    const a = (i / 64) * 2 * Math.PI;
+    pts.push([lng + (m / (111320 * Math.cos((lat * Math.PI) / 180))) * Math.cos(a), lat + (m / 110540) * Math.sin(a)]);
+  }
+  return pts;
+}
+function drawAccuracy() {
+  if (!map?.isStyleLoaded()) return;
+  const data = { type: 'FeatureCollection', features: accCircle ? [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [circlePolygon(accCircle.lng, accCircle.lat, Math.max(accCircle.acc, 8))] } }] : [] };
+  if (map.getSource('friend-acc')) map.getSource('friend-acc').setData(data);
+  else {
+    map.addSource('friend-acc', { type: 'geojson', data });
+    map.addLayer({ id: 'friend-acc-fill', type: 'fill', source: 'friend-acc', paint: { 'fill-color': accCircle?.color || '#1A73E8', 'fill-opacity': 0.14 } });
+    map.addLayer({ id: 'friend-acc-line', type: 'line', source: 'friend-acc', paint: { 'line-color': accCircle?.color || '#1A73E8', 'line-width': 1.5, 'line-opacity': 0.6 } });
+  }
+  if (accCircle) {
+    map.setPaintProperty('friend-acc-fill', 'fill-color', accCircle.color);
+    map.setPaintProperty('friend-acc-line', 'line-color', accCircle.color);
+  }
+}
+function focusFriend(id) {
+  const u = userById(id), loc = state.locations[id];
+  if (!u) return;
+  if (!loc) return toast(`${u.name} isn’t sharing their location right now.`);
+  accCircle = { userId: u.id, lng: loc.lng, lat: loc.lat, acc: loc.acc || 0, color: u.color };
+  drawAccuracy();
+  const zoom = loc.acc > 500 ? 14 : loc.acc > 100 ? 15.5 : 17;
+  // Keep them in view above an open card (the friend sheet)
+  const pad = padding();
+  const sheet = document.querySelector('.sheet.peek:not(.closing)');
+  if (sheet && innerWidth < 900) pad.bottom = Math.max(pad.bottom, sheet.offsetHeight + 24);
+  map.flyTo({ center: [loc.lng, loc.lat], zoom, padding: pad, duration: 900 });
+  const fm = friendMarkers.get(+id);
+  if (fm) {
+    fm.el.classList.remove('pinpoint');
+    void fm.el.offsetWidth;
+    fm.el.classList.add('pinpoint');
+    setTimeout(() => fm.el.classList.remove('pinpoint'), 4200);
+  }
+  if (Date.now() - loc.ts > 15 * 60e3) toast(`${u.name} was here ${ago(loc.ts)}. They may have moved since.`);
+}
+function fitFriends() {
+  const pts = Object.entries(state.locations).filter(([id]) => +id !== state.me?.id).map(([, l]) => l);
+  const me = myPosition();
+  if (me) pts.push(me);
+  if (!pts.length) return toast('Nobody is sharing their location right now.');
+  if (pts.length === 1) return map.flyTo({ center: [pts[0].lng, pts[0].lat], zoom: 15, padding: padding() });
+  const b = new maplibregl.LngLatBounds();
+  pts.forEach((l) => b.extend([l.lng, l.lat]));
+  map.fitBounds(b, { padding: padding(), maxZoom: 16 });
 }
 
 function renderMe() {

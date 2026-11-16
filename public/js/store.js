@@ -25,6 +25,8 @@ export const state = {
   locations: {},
   online: [],
   activity: [],
+  notifications: [],
+  unread: 0,
   config: {},
   conn: 'offline', // online | offline | connecting
   outbox: JSON.parse(localStorage.getItem(LS.outbox) || '[]'),
@@ -36,6 +38,7 @@ function persist() {
     localStorage.setItem(LS.state, JSON.stringify({
       me: state.me, trip: state.trip, users: state.users, places: [...state.places.values()], subgroups: state.subgroups,
       expenses: [...state.expenses.values()], locations: state.locations, activity: state.activity.slice(0, 30), config: state.config,
+      notifications: state.notifications.slice(0, 60), unread: state.unread,
     }));
   } catch { /* quota: ignore */ }
 }
@@ -46,7 +49,8 @@ export function loadCached() {
   try {
     const c = JSON.parse(localStorage.getItem(LS.state) || 'null');
     if (!c || !c.me) return false;
-    Object.assign(state, { me: c.me, trip: c.trip, users: c.users, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {} });
+    Object.assign(state, { me: c.me, trip: c.trip, users: c.users, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
+      notifications: c.notifications || [], unread: c.unread || 0 });
     state.places = new Map((c.places || []).map((p) => [p.id, p]));
     state.expenses = new Map((c.expenses || []).map((e) => [e.id, e]));
     for (const o of state.outbox) applyLocal(o.op, o.data);
@@ -131,13 +135,14 @@ function handle(m) {
       state.me = m.me; state.trip = m.trip; state.users = m.users; state.locations = m.locations;
       state.online = m.online; state.activity = m.activity; state.config = m.config || {};
       state.subgroups = m.subgroups || [];
+      state.notifications = m.notifications || []; state.unread = m.unread || 0;
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
       for (const o of state.outbox) applyLocal(o.op, o.data); // keep unsent edits visible
       setConn('online');
       flushOutbox();
       persistSoon();
-      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses'].forEach((e) => emit(e));
+      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses', 'notifs'].forEach((e) => emit(e));
       break;
     case 'ack': {
       const idx = state.outbox.findIndex((o) => o.id === m.id);
@@ -165,6 +170,16 @@ function handle(m) {
     }
     case 'trip': state.trip = m.trip; emit('trip'); emit('places'); persistSoon(); break;
     case 'activity': state.activity.unshift(m.item); state.activity.length = Math.min(state.activity.length, 100); emit('activity'); break;
+    case 'notif': {
+      const i = state.notifications.findIndex((n) => n.id === m.item.id);
+      if (i >= 0) state.notifications.splice(i, 1);
+      state.notifications.unshift(m.item);
+      state.notifications.length = Math.min(state.notifications.length, 100);
+      state.unread = m.unread;
+      emit('notifs', { fresh: m.item }); persistSoon(); break;
+    }
+    case 'notif.unread': state.unread = m.unread; emit('notifs'); persistSoon(); break;
+    case 'notif.prefs': if (state.me) state.me.notifyPrefs = m.prefs; emit('notif-prefs'); persistSoon(); break;
     case 'kicked': emit('unauthorized'); break;
   }
 }
@@ -317,6 +332,16 @@ export function dayStops(day, groupId = null) {
     .filter((p) => p.day === day && ['confirmed', 'visited', 'skipped'].includes(p.status) && (!groupId || !p.groupId || p.groupId === groupId))
     .sort(byPlan)
     .map((p) => ({ place: p, state: p.status === 'visited' ? 'visited' : p.status === 'skipped' ? 'skipped' : (day < t ? 'missed' : 'todo') }));
+}
+
+// A person's own plan: stops for everyone, plus stops for subgroups they belong to.
+export function personSees(place, userId) {
+  if (!place.groupId) return true;
+  const g = groupById(place.groupId);
+  return !g || g.memberIds.includes(+userId);
+}
+export function personDayStops(day, userId) {
+  return dayStops(day).filter((s) => personSees(s.place, userId));
 }
 
 export function defaultDay() {
