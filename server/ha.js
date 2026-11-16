@@ -78,7 +78,10 @@ export function createHA({ s3, dataDir, node, priority = 'primary', env = proces
         st.error = null;
       } catch (e) {
         st.error = e.message;
-        log(`[ha] lease check failed: ${e.message}`);
+        const hint = /\b403\b/.test(e.message) ? ' (check S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY and that the token can use this bucket)'
+          : /\b404\b/.test(e.message) ? ' (check S3_BUCKET matches the bucket name)'
+          : /fetch failed|ENOTFOUND|EAI_AGAIN/.test(e.message) ? ' (check S3_ENDPOINT and that this machine has internet)' : '';
+        log(`[ha] lease check failed: ${e.message}${hint}`);
       }
       await sleep(RENEW / 2 + Math.random() * 1000);
     }
