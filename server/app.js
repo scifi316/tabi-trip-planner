@@ -74,6 +74,74 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const VOTES = new Set(['up', 'down', 'veto']);
   const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#9CAEB7'];
 
+  // ---------- clearing all expenses (admins and the developer console) ----------
+  // Expenses are soft-deleted with a batch id, so the most recent clear can be undone exactly,
+  // without bringing back expenses that had been deleted one by one before it.
+  function expenseCounts() {
+    const one = (sql) => db.prepare(sql).get().n;
+    return {
+      expenses: one("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'expense'"),
+      payments: one("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'payment'"),
+      private: one("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND visibility = 'private'"),
+    };
+  }
+  function lastExpenseReset() {
+    const r = db.prepare(`SELECT reset_batch b, COUNT(*) n, MAX(deleted_at) at, MAX(updated_by) by FROM expenses
+      WHERE reset_batch IS NOT NULL AND deleted_at IS NOT NULL GROUP BY reset_batch ORDER BY at DESC LIMIT 1`).get();
+    if (!r) return null;
+    const who = r.b.split(':')[1];
+    return { batch: r.b, count: r.n, at: r.at, by: who === 'dev' ? 'the developer console' : nameOf(+who) };
+  }
+  function pushResetInfo() {
+    const info = lastExpenseReset();
+    for (const c of clients) if (c.user.is_admin || db.prepare('SELECT is_admin FROM users WHERE id = ?').get(c.user.id)?.is_admin) sendTo(c, { t: 'expense.resetInfo', info });
+  }
+  function resetExpenses({ actor = null, scope = 'all' }) {
+    const where = `deleted_at IS NULL${scope === 'shared' ? " AND visibility = 'group'" : ''}`;
+    const rows = db.prepare(`SELECT id FROM expenses WHERE ${where}`).all().map((r) => r.id);
+    if (!rows.length) return { batch: null, count: 0 };
+    const batch = `r${now()}:${actor ? actor.id : 'dev'}`;
+    const affected = new Set(db.prepare(`SELECT paid_by u FROM expenses WHERE ${where} UNION SELECT s.user_id FROM expense_shares s JOIN expenses e ON e.id = s.expense_id WHERE e.${where.replace(/ AND /g, ' AND e.')}`).all().map((r) => r.u));
+    db.prepare(`UPDATE expenses SET deleted_at = ?, updated_by = ?, reset_batch = ? WHERE ${where}`).run(now(), actor?.id ?? null, batch);
+    for (const id of rows) broadcast({ t: 'expense.del', id });
+    const who = actor ? actor.name : 'The developer console';
+    logActivity(actor?.id ?? null, `${who} cleared ${rows.length} expense${rows.length === 1 ? '' : 's'}${scope === 'shared' ? ' (shared ones)' : ''}. Balances start from zero.`);
+    notifier.notify([...affected].map((uid) => ({ userId: uid, kinds: ['expenses', 'payments'], text: `${who} cleared ${scope === 'shared' ? 'all shared' : 'all'} expenses. Balances start from zero.` })),
+      { actorId: actor?.id ?? null, ref: { type: 'reset', id: batch } });
+    devPush('op', { user: actor ? actor.name : 'dev', op: 'expense.reset', ok: true, count: rows.length, scope });
+    pushResetInfo();
+    return { batch, count: rows.length };
+  }
+  function restoreExpenseReset(batch, actor = null) {
+    const ids = db.prepare('SELECT id FROM expenses WHERE reset_batch = ? AND deleted_at IS NOT NULL').all(batch).map((r) => r.id);
+    if (!ids.length) return { count: 0 };
+    db.prepare('UPDATE expenses SET deleted_at = NULL, reset_batch = NULL, updated_by = ? WHERE reset_batch = ?').run(actor?.id ?? null, batch);
+    for (const id of ids) broadcastExpense(id);
+    const who = actor ? actor.name : 'The developer console';
+    logActivity(actor?.id ?? null, `${who} brought back ${ids.length} cleared expense${ids.length === 1 ? '' : 's'}`);
+    const affected = new Set(ids.flatMap((id) => involved(getExpense(id))));
+    notifier.notify([...affected].map((uid) => ({ userId: uid, kinds: ['expenses', 'payments'], text: `${who} brought back ${ids.length} expenses that were cleared` })),
+      { actorId: actor?.id ?? null, ref: { type: 'reset', id: batch } });
+    pushResetInfo();
+    return { count: ids.length };
+  }
+
+  // ---------- OwnTracks status (shown to each person in Settings) ----------
+  function ownTracksStatus(u) {
+    let info = {};
+    try { info = JSON.parse(u.ot_info || '{}') || {}; } catch { /* ignore */ }
+    return { result: u.ot_status || null, at: u.ot_status_at || null, okAt: u.ot_ok_at || null, info };
+  }
+  function recordOwnTracks(u, result, info) {
+    const t = now();
+    // A message that isn't a location (a region event, a waypoint list…) keeps the details of the last location.
+    const keep = result.startsWith('ignored-') && result !== 'ignored-sharing-off';
+    db.prepare(`UPDATE users SET ot_status = ?, ot_status_at = ?, ot_ok_at = CASE WHEN ? THEN ? ELSE ot_ok_at END, ot_info = CASE WHEN ? THEN ot_info ELSE ? END WHERE id = ?`)
+      .run(result, t, result === 'stored' ? 1 : 0, t, keep && u.ot_info ? 1 : 0, JSON.stringify(info), u.id);
+    const st = ownTracksStatus(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id));
+    for (const c of clients) if (c.user.id === u.id) sendTo(c, { t: 'owntracks.status', status: st });
+  }
+
   const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
   const userCount = () => db.prepare('SELECT COUNT(*) n FROM users').get().n;
@@ -138,7 +206,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const admin = !!me.is_admin;
     return {
       t: 'state',
-      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me) },
+      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me), owntracks: ownTracksStatus(me) },
+      ...(me.is_admin ? { expenseReset: lastExpenseReset() } : {}),
       trip: tripForClient(user),
       users: listUsers(),
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
@@ -436,9 +505,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       if (p === '/api/owntracks' && req.method === 'POST') {
         const h = String(req.headers.authorization || '');
         const [name, tok] = h.startsWith('Basic ') ? Buffer.from(h.slice(6), 'base64').toString().split(':') : [];
-        const u = name && db.prepare('SELECT * FROM users WHERE name = ?').get(name);
+        // Usernames match without regard to case: "kenny" in OwnTracks is a common slip for "Kenny".
+        const u = name && (db.prepare('SELECT * FROM users WHERE name = ?').get(name) || db.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE').get(name));
         if (!u || !tok || !u.owntracks_token || tok !== u.owntracks_token) {
           devPush('owntracks', { user: name || '(none)', result: !h ? 'no-credentials' : !u ? 'unknown-user' : 'bad-token', ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 80) });
+          if (u && tok) recordOwnTracks(u, 'bad-token', { ua: String(req.headers['user-agent'] || '').slice(0, 80) });
           return send(res, 401, { error: 'Bad OwnTracks credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
         }
         const b = await readBody(req);
@@ -450,6 +521,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (result === 'stored') {
           updateLocation(u, { lat: b.lat, lng: b.lon, acc: b.acc, heading: b.cog, speed: b.vel != null ? b.vel / 3.6 : null, batt: b.batt, ts: b.tst ? b.tst * 1000 : now() }, 'owntracks');
         }
+        recordOwnTracks(u, result, {
+          type: b._type, batt: b.batt, acc: b.acc, trigger: b.t, fix: b.tst ? b.tst * 1000 : null, conn: b.conn,
+          device: String(req.headers['x-limit-d'] || b.tid || '').slice(0, 40), ua: String(req.headers['user-agent'] || '').slice(0, 80),
+        });
         const locs = listLocations();
         const out = [];
         for (const f of listUsers()) {
@@ -1175,6 +1250,23 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return { ok: true };
       }
 
+      // ---- clearing all expenses (admins) ----
+      case 'expense.resetPreview': {
+        requireAdmin();
+        return { ok: true, counts: expenseCounts(), last: lastExpenseReset() };
+      }
+      case 'expense.reset': {
+        requireAdmin();
+        if (d.confirm !== 'CLEAR') fail('Type CLEAR to confirm.');
+        return { ok: true, ...resetExpenses({ actor: user, scope: d.scope === 'shared' ? 'shared' : 'all' }) };
+      }
+      case 'expense.restoreReset': {
+        requireAdmin();
+        const r = restoreExpenseReset(String(d.batch || ''), user);
+        if (!r.count) fail('There’s nothing left to bring back from that clear.');
+        return { ok: true, ...r };
+      }
+
       // ---- notifications ----
       case 'notif.read': {
         const n = notifier.markRead(user.id, Array.isArray(d.ids) ? d.ids : undefined);
@@ -1229,6 +1321,19 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const count = (sql) => db.prepare(sql).get().n;
     const names = Object.fromEntries(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
     if (p === '/api/dev/stream') return devSubscribe(req, res);
+    // The only actions in the console: clearing all expenses, and undoing the last clear.
+    if (p === '/api/dev/expenses' && req.method === 'GET') return send(res, 200, { counts: expenseCounts(), last: lastExpenseReset() });
+    if ((p === '/api/dev/expenses/reset' || p === '/api/dev/expenses/restore') && req.method === 'POST') {
+      if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-site request refused.' });
+      return readBody(req).then((b) => {
+        if (p.endsWith('/reset')) {
+          if (b.confirm !== 'CLEAR') return send(res, 400, { error: 'Type CLEAR to confirm.' });
+          return send(res, 200, { ok: true, ...resetExpenses({ scope: b.scope === 'shared' ? 'shared' : 'all' }) });
+        }
+        const r = restoreExpenseReset(String(b.batch || ''));
+        return r.count ? send(res, 200, { ok: true, ...r }) : send(res, 400, { error: 'There’s nothing left to bring back from that clear.' });
+      }).catch((e) => send(res, 400, { error: e.message }));
+    }
     if (p === '/api/dev/events') {
       const kind = url.searchParams.get('kind') || 'log';
       return send(res, 200, { events: devRecent(kind, { since: +url.searchParams.get('since') || 0, limit: 1000 }) });

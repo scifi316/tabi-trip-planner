@@ -3,14 +3,13 @@ import * as maplibregl from '/vendor/maplibre-gl/maplibre-gl.mjs';
 import { state, on, emit, api, userById, groupById, groupsOn, myGroupOn, dayStops, defaultDay, tripDays, effectiveStatus, today } from './store.js';
 import { openGroups, groupWhere } from './groups.js';
 import { openFriends, openFriend } from './friends.js';
-import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets } from './ui.js';
+import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets, openSheet } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
 import { myPosition, locateOnce } from './location.js';
 
 let map;
 let styleUrl = null;
-const placeMarkers = new Map(); // id -> { marker, el, key }
 const friendMarkers = new Map();
 let meMarker = null;
 let stripDay = null;
@@ -73,16 +72,26 @@ export function initMap() {
   });
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
-  map.on('style.load', () => { applyLabelLanguage(); drawAccuracy(); });
+  map.on('style.load', () => { applyLabelLanguage(); drawAccuracy(); ensurePlaceSource(); syncSoon(); });
+  // Keep cluster markers in step with the map: during moves (throttled), when it settles, and when
+  // the clustered source finishes updating.
+  map.on('render', () => { if (performance.now() - lastSync > 90) syncClusters(); });
+  map.on('moveend', syncSoon);
+  map.on('zoom', () => { if (stationsShown !== null && (map.getZoom() >= STATION_MIN_ZOOM) !== stationsShown) renderPlaces(); });
+  map.on('sourcedata', (e) => { if (e.sourceId === PLACE_SRC && e.isSourceLoaded) syncSoon(); });
   let warned = false;
+  const useFallback = () => {
+    if (usingFallback || map.isStyleLoaded()) return;
+    usingFallback = true;
+    map.setStyle(fallbackStyle(), { diff: false });
+    if (!warned) { warned = true; toast('Map tiles are not saved for offline use here yet. Pins and friends still show.'); }
+  };
   map.on('error', (e) => {
     // Style couldn't load (offline and not cached): show a plain background so markers still work.
-    if (!map.isStyleLoaded() && String(e.error?.message || '').match(/style|fetch|Failed/i) && !usingFallback) {
-      usingFallback = true;
-      map.setStyle(fallbackStyle(), { diff: false });
-      if (!warned) { warned = true; toast('Map tiles are not saved for offline use here yet. Pins and friends still show.'); }
-    }
+    if (!map.isStyleLoaded() && String(e.error?.message || '').match(/style|fetch|Failed|Offline|50\d/i)) useFallback();
   });
+  // A style request can also just hang (captive Wi-Fi, a very weak signal) without an error.
+  setTimeout(useFallback, 12000);
   map.on('click', () => { closePeekSheets(); hideLayers(); hideResults(); if (accCircle) { accCircle = null; drawAccuracy(); } });
 
   setupLongPress();
@@ -165,52 +174,208 @@ function isVisible(p) {
   return true;
 }
 
+// Places are drawn in two ways:
+//  • "pinned" places — the day's numbered stops and whatever place is open — are always their own marker;
+//  • everything else goes into a clustered GeoJSON source. MapLibre groups nearby points as you zoom
+//    out, and we draw one HTML marker per visible dot or cluster (re-synced as the map moves).
+// Marker elements are plain wrappers: MapLibre positions them with a CSS transform, so all styling
+// (sizes, scale on select, transitions) lives on the inner element. Styling the wrapper itself made
+// dots slide behind the map while zooming.
+const PLACE_SRC = 'places';
+const STATUS_KEYS = Object.keys(STATUS);
+let placeData = { type: 'FeatureCollection', features: [] };
+const pinnedMarkers = new Map(); // place id -> { marker, el, key }
+const dotMarkers = new Map();    // place id -> { marker, el, key }
+const clusterMarkers = new Map(); // 'c<cluster id>' -> { marker, el, key }
+// Zoomed out past city level, the day's numbered stops join the clusters too, so their badges don't
+// sit on top of (and steal taps from) a cluster. They come back as badges when you zoom into a city.
+const STATION_MIN_ZOOM = 11;
+let stationsShown = null;
+
+function makeMarker(lngLat, onClick, anchor = 'center') {
+  const wrap = document.createElement('div');
+  wrap.className = 'mk';
+  const el = document.createElement('button');
+  el.type = 'button';
+  wrap.appendChild(el);
+  el.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+  const marker = new maplibregl.Marker({ element: wrap, anchor }).setLngLat(lngLat).addTo(map);
+  return { marker, el, wrap };
+}
+
+// Called on every style load (a theme switch replaces the style) and whenever places change.
+// Before the first style has loaded MapLibre refuses new sources; that's fine, style.load retries.
+function ensurePlaceSource() {
+  try {
+    if (!map || map.getSource(PLACE_SRC)) return;
+  } catch { return; }
+  try { addPlaceSource(); } catch { /* style not ready yet */ }
+}
+function addPlaceSource() {
+  map.addSource(PLACE_SRC, {
+    type: 'geojson', data: placeData, cluster: true, clusterRadius: 46, clusterMaxZoom: 15,
+    // count each status inside a cluster, for the coloured ring
+    clusterProperties: Object.fromEntries(STATUS_KEYS.map((k) => [k, ['+', ['case', ['==', ['get', 's'], k], 1, 0]]])),
+  });
+  // An invisible layer, so MapLibre builds the cluster tiles we read markers from.
+  map.addLayer({ id: 'places-index', type: 'circle', source: PLACE_SRC, paint: { 'circle-radius': 0, 'circle-opacity': 0 } });
+}
+
 function renderPlaces() {
   if (!map) return;
   const stops = stripDay ? dayStops(stripDay, currentGroup()) : [];
-  const stationNo = new Map(stops.map((s, i) => [s.place.id, i + 1]));
+  stationsShown = map.getZoom() >= STATION_MIN_ZOOM;
+  const stationNo = new Map(stationsShown ? stops.map((s, i) => [s.place.id, i + 1]) : []);
+  const onDay = new Set(stops.map((s) => s.place.id));
   const nextId = stops.find((s) => s.state === 'todo')?.place.id;
   const sel = selectedPlaceId();
-  const seen = new Set();
+  const pinned = new Set();
+  const features = [];
 
   for (const p of state.places.values()) {
-    if (!isVisible(p) && !stationNo.has(p.id)) continue;
-    seen.add(p.id);
-    const eff = effectiveStatus(p);
     const n = stationNo.get(p.id);
+    if (!isVisible(p) && !n && !onDay.has(p.id)) continue;
+    const eff = effectiveStatus(p);
+    if (!n && p.id !== sel) {
+      features.push({ type: 'Feature', id: features.length, geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { id: p.id, s: eff } });
+      continue;
+    }
+    pinned.add(p.id);
     const stopState = n ? stops[n - 1].state : null;
     const ring = p.groupId ? groupById(p.groupId)?.color : null;
     const key = [n, stopState, eff, p.id === sel, p.id === nextId, p.lat, p.lng, p.name, ring].join('|');
-    let m = placeMarkers.get(p.id);
+    let m = pinnedMarkers.get(p.id);
     if (m && m.key === key) continue;
-    if (!m) {
-      const el = document.createElement('button');
-      el.setAttribute('type', 'button');
-      el.addEventListener('click', (e) => { e.stopPropagation(); openPlace(p.id); });
-      const marker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([p.lng, p.lat]).addTo(map);
-      m = { marker, el };
-      placeMarkers.set(p.id, m);
-    }
+    if (!m) { m = makeMarker([p.lng, p.lat], () => openPlace(p.id)); pinnedMarkers.set(p.id, m); }
     m.key = key;
     m.marker.setLngLat([p.lng, p.lat]);
     const el = m.el;
+    el.dataset.pid = p.id;
     el.setAttribute('aria-label', `${p.name}, ${STATUS[eff].label}`);
     el.title = p.name;
     if (n) {
       el.className = `station sm ${p.id === sel ? 'selected' : ''}`;
       el.dataset.state = p.id === nextId ? 'next' : stopState === 'todo' ? '' : stopState;
       el.textContent = n;
-      el.style.zIndex = 3;
+      m.wrap.style.zIndex = p.id === sel ? 5 : 3;
       if (ring) el.style.setProperty('--ring', ring); else el.style.removeProperty('--ring');
     } else {
-      el.className = `place-dot ${p.id === sel ? 'selected' : ''}`;
-      el.dataset.status = eff;
-      el.textContent = '';
-      el.style.setProperty('--dot', STATUS[eff].color);
-      el.style.zIndex = p.id === sel ? 4 : 1;
+      dotStyle(el, p, eff, true);
+      m.wrap.style.zIndex = 5;
     }
   }
-  for (const [id, m] of placeMarkers) if (!seen.has(id)) { m.marker.remove(); placeMarkers.delete(id); }
+  for (const [id, m] of pinnedMarkers) if (!pinned.has(id)) { m.marker.remove(); pinnedMarkers.delete(id); }
+
+  placeData = { type: 'FeatureCollection', features };
+  ensurePlaceSource();
+  map.getSource(PLACE_SRC)?.setData(placeData);
+  // A pinned place may have just left a cluster (or joined one): resync once the source has updated.
+  syncSoon();
+}
+
+function dotStyle(el, p, eff, selected) {
+  el.className = `place-dot ${selected ? 'selected' : ''}`;
+  el.dataset.pid = p.id;
+  el.dataset.status = eff;
+  el.textContent = '';
+  el.style.setProperty('--dot', STATUS[eff].color);
+  el.setAttribute('aria-label', `${p.name}, ${STATUS[eff].label}`);
+  el.title = p.name;
+}
+
+// Draw a marker for each dot and cluster MapLibre currently shows.
+let syncTimer = 0, lastSync = 0;
+function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(syncClusters, 30); }
+function syncClusters() {
+  lastSync = performance.now();
+  if (!map) return;
+  let ready = false;
+  try { ready = !!map.getSource(PLACE_SRC) && map.isSourceLoaded(PLACE_SRC); } catch { /* no style yet */ }
+  // Until the map style has loaded there's nothing to cluster with: show every place as a plain dot.
+  const feats = ready ? map.querySourceFeatures(PLACE_SRC) : placeData.features;
+  const seenDots = new Set(), seenClusters = new Set();
+  for (const f of feats) {
+    const pr = f.properties;
+    const ll = f.geometry.coordinates;
+    if (pr.cluster) {
+      const k = `c${pr.cluster_id}`;
+      if (seenClusters.has(k)) continue;
+      seenClusters.add(k);
+      const count = pr.point_count;
+      const key = [count, ll[0], ll[1], ...STATUS_KEYS.map((s) => pr[s] || 0)].join('|');
+      let m = clusterMarkers.get(k);
+      if (!m) { const id = pr.cluster_id; m = makeMarker(ll, () => openCluster(id, ll)); clusterMarkers.set(k, m); }
+      if (m.key !== key) {
+        m.key = key;
+        m.marker.setLngLat(ll);
+        const el = m.el;
+        el.className = `cluster ${count >= 50 ? 'xl' : count >= 10 ? 'l' : ''}`;
+        el.dataset.count = count;
+        el.style.setProperty('--ring', clusterRing(pr, count));
+        el.innerHTML = `<span class="num">${count}</span>`;
+        el.setAttribute('aria-label', `${count} places here. Zoom in to see them.`);
+        el.title = `${count} places`;
+        m.wrap.style.zIndex = 2;
+      }
+    } else {
+      if (seenDots.has(pr.id)) continue;
+      const p = state.places.get(pr.id);
+      if (!p) continue;
+      seenDots.add(pr.id);
+      // exact position from the place itself (tile geometry is slightly rounded)
+      const at = [p.lng, p.lat];
+      let m = dotMarkers.get(pr.id);
+      if (!m) { m = makeMarker(at, () => openPlace(pr.id)); dotMarkers.set(pr.id, m); }
+      const key = [pr.s, p.lng, p.lat, p.name].join('|');
+      if (m.key !== key) { m.key = key; m.marker.setLngLat(at); dotStyle(m.el, p, pr.s, false); m.wrap.style.zIndex = 1; }
+    }
+  }
+  for (const [k, m] of dotMarkers) if (!seenDots.has(k)) { m.marker.remove(); dotMarkers.delete(k); }
+  for (const [k, m] of clusterMarkers) if (!seenClusters.has(k)) { m.marker.remove(); clusterMarkers.delete(k); }
+}
+
+// A ring split by status, in the same colours as the dots.
+function clusterRing(pr, count) {
+  let at = 0;
+  const parts = [];
+  for (const s of STATUS_KEYS) {
+    const n = pr[s] || 0;
+    if (!n) continue;
+    const from = (at / count) * 360, to = ((at + n) / count) * 360;
+    parts.push(`${STATUS[s].color} ${from}deg ${to}deg`);
+    at += n;
+  }
+  return `conic-gradient(${parts.join(', ') || 'var(--ink-3) 0 360deg'})`;
+}
+
+// Tap a cluster: zoom to fit everything in it. If they're all on the same spot, list them instead.
+async function openCluster(clusterId, ll) {
+  const src = map.getSource(PLACE_SRC);
+  let leaves = [];
+  try { leaves = await src.getClusterLeaves(clusterId, Infinity, 0); } catch { /* cluster changed while zooming */ }
+  if (!leaves.length) return map.easeTo({ center: ll, zoom: map.getZoom() + 2, padding: padding() });
+  const b = new maplibregl.LngLatBounds();
+  leaves.forEach((f) => b.extend(f.geometry.coordinates));
+  const sw = b.getSouthWest(), ne = b.getNorthEast();
+  if (Math.abs(ne.lat - sw.lat) < 2e-4 && Math.abs(ne.lng - sw.lng) < 2e-4) {
+    return openSpotList(leaves.map((f) => state.places.get(f.properties.id)).filter(Boolean), ll);
+  }
+  closePeekSheets();
+  map.fitBounds(b, { padding: padding(), maxZoom: 17, duration: 650 });
+}
+
+function openSpotList(places, ll) {
+  map.easeTo({ center: ll, zoom: Math.max(map.getZoom(), 16), padding: padding() });
+  const s = openSheet({
+    title: `${places.length} places at this spot`,
+    peek: true,
+    body: `<div class="spot-list">${places.map((p) => {
+      const eff = effectiveStatus(p);
+      return `<button class="spot-row" data-spot="${esc(p.id)}"><span class="place-dot static" style="--dot:${STATUS[eff].color}"></span>
+        <span class="grow"><b>${esc(p.name)}</b><span class="help">${esc(STATUS[eff].label)}</span></span>${icon('chevron-right', 'small')}</button>`;
+    }).join('')}</div>`,
+  });
+  s.el.querySelectorAll('[data-spot]').forEach((b) => b.onclick = () => { s.close(); openPlace(b.dataset.spot); });
 }
 
 // ---------- friends ----------

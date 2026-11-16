@@ -10,6 +10,7 @@ import { openGroups } from './groups.js';
 import { getMap } from './map.js';
 import { prefsHtml, bindPrefs } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
+import { ownTracksBadge } from './owntracks.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -22,7 +23,9 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset'].forEach((e) => on(e, maybeRender));
+// Keep "3 min ago" honest while Settings is open
+setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 
 const sw = (attr, checked, label) => `<label class="switch"><input type="checkbox" ${attr} ${checked ? 'checked' : ''} aria-label="${esc(label)}"><span></span></label>`;
 const seg = (name, value, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button data-${name}="${v}" aria-pressed="${value === v}">${esc(l)}</button>`).join('')}</div>`;
@@ -70,7 +73,8 @@ export function render() {
       <div class="row stack">
         <div class="label">Share even when Tabi is closed</div>
         <div class="help">Browsers stop location when a web app is in the background. For always-on sharing like Find My, install the free OwnTracks app (iOS and Android) and point it at Tabi.</div>
-        <button class="btn small" data-owntracks style="margin-top:10px;align-self:flex-start">Set up OwnTracks</button>
+        ${ownTracksBadge(me.owntracks, { sharing: me.shareLocation })}
+        <button class="btn small" data-owntracks style="margin-top:10px;align-self:flex-start">${me.owntracks?.at ? 'OwnTracks settings' : 'Set up OwnTracks'}</button>
       </div>
     </div></section>
 
@@ -142,6 +146,13 @@ export function render() {
       <div class="row"><div class="grow"><div class="label">Export expenses</div><div class="help">Every expense you can see, as a spreadsheet.</div></div>
         <button class="btn small" data-export="expenses">CSV</button></div>
     </div></section>
+    ${admin ? `
+    <section class="section" data-section="admin-expenses"><h2>Expenses (admins)</h2><div class="card">
+      <div class="row"><div class="grow"><div class="label">Clear all expenses</div><div class="help">Removes every expense and payment for everyone, so balances start from zero. Useful after test entries or mistakes. You can bring them back afterwards.</div></div>
+        <button class="btn small danger" data-reset-expenses>Clear…</button></div>
+      ${state.expenseReset ? `<div class="row"><div class="grow"><div class="label">Last cleared ${ago(state.expenseReset.at)}</div><div class="help">${state.expenseReset.count} expense${state.expenseReset.count === 1 ? '' : 's'}, by ${esc(state.expenseReset.by)}.</div></div>
+        <button class="btn small" data-restore-expenses>Bring back</button></div>` : ''}
+    </div></section>` : ''}
 
     <section class="section"><h2>Recent activity</h2><div class="card">
       ${state.activity.slice(0, 25).map((a) => `<div class="row activity">${avatar(userById(a.userId))}<div class="grow">${esc(a.text)}<time>${ago(a.ts)}</time></div></div>`).join('') || '<div class="row help">Nothing yet.</div>'}
@@ -190,6 +201,8 @@ function bind(el) {
     if (e.target.checked) requestWake();
   });
   el.querySelector('[data-owntracks]').onclick = ownTracksSheet;
+  el.querySelector('[data-reset-expenses]')?.addEventListener('click', resetExpensesSheet);
+  el.querySelector('[data-restore-expenses]')?.addEventListener('click', () => restoreExpenses(state.expenseReset));
 
   el.querySelectorAll('[data-themepick]').forEach((b) => b.onclick = () => { localStorage.setItem('tabi.theme', b.dataset.themepick); applyTheme(); render(); });
   el.querySelectorAll('[data-labels]').forEach((b) => b.onclick = () => { localStorage.setItem('tabi.labels', b.dataset.labels); emit('labels'); render(); });
@@ -290,6 +303,52 @@ function passwordSheet() {
   };
 }
 
+// Admins: clear every expense (or just the shared ones). Typed confirmation, then an Undo.
+async function resetExpensesSheet() {
+  const r = await op('expense.resetPreview');
+  if (r.ok === false) return toast(r.error || 'You need to be online to do this.');
+  const c = r.counts;
+  const total = c.expenses + c.payments;
+  if (!total) return toast('There are no expenses to clear.');
+  const s = openSheet({
+    title: 'Clear all expenses?',
+    sub: 'Balances go back to zero for everyone.',
+    body: `
+      <p class="hint" style="font-size:14.5px;margin-top:0">This removes <b>${c.expenses} expense${c.expenses === 1 ? '' : 's'}</b> and <b>${c.payments} payment${c.payments === 1 ? '' : 's'}</b>. Everyone involved gets a notification. You can bring them back from Settings afterwards.</p>
+      ${c.private ? `<div class="seg" role="group" aria-label="What to clear" style="margin-bottom:14px">
+        <button data-scope="all" aria-pressed="true">Everything (${total})</button>
+        <button data-scope="shared" aria-pressed="false">Shared only (${total - c.private})</button></div>
+        <p class="help" data-scope-help style="margin:-6px 2px 14px">Includes ${c.private} private expense${c.private === 1 ? '' : 's'} between people, which you can’t see.</p>` : ''}
+      <label class="field"><span>Type CLEAR to confirm</span><input class="input" data-confirm autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CLEAR"></label>
+      <p class="err" data-err hidden></p>`,
+    foot: `<button class="btn" data-close>Cancel</button><button class="btn danger-fill" data-go disabled>Clear expenses</button>`,
+  });
+  let scope = 'all';
+  const go = s.el.querySelector('[data-go]');
+  const input = s.el.querySelector('[data-confirm]');
+  input.oninput = () => { go.disabled = input.value.trim().toUpperCase() !== 'CLEAR'; };
+  s.el.querySelectorAll('[data-scope]').forEach((b) => b.onclick = () => {
+    scope = b.dataset.scope;
+    s.el.querySelectorAll('[data-scope]').forEach((x) => x.setAttribute('aria-pressed', x === b));
+    s.el.querySelector('[data-scope-help]').textContent = scope === 'all'
+      ? `Includes ${c.private} private expense${c.private === 1 ? '' : 's'} between people, which you can’t see.`
+      : `Keeps ${c.private} private expense${c.private === 1 ? '' : 's'} between people.`;
+  });
+  go.onclick = async () => {
+    go.disabled = true;
+    const res = await op('expense.reset', { scope, confirm: 'CLEAR' });
+    if (res.ok === false) { const e = s.el.querySelector('[data-err]'); e.hidden = false; e.textContent = res.error; go.disabled = false; return; }
+    s.close();
+    toast(`Cleared ${res.count} expense${res.count === 1 ? '' : 's'}`, { action: 'Undo', onAction: () => restoreExpenses({ batch: res.batch, count: res.count }), ms: 10000 });
+  };
+  input.focus();
+}
+async function restoreExpenses(info) {
+  if (!info?.batch) return;
+  const r = await op('expense.restoreReset', { batch: info.batch });
+  toast(r.ok === false ? r.error : `Brought back ${r.count} expense${r.count === 1 ? '' : 's'}`);
+}
+
 function ownTracksSheet() {
   const me = state.me;
   const url = `${location.origin}/api/owntracks${state.config.gate ? `?gate=${state.config.gate}` : ''}`;
@@ -297,6 +356,7 @@ function ownTracksSheet() {
     title: 'Always-on sharing with OwnTracks',
     sub: 'Free, open source, and keeps sharing when your phone is locked.',
     body: `
+      <div data-ot-live>${ownTracksBadge(me.owntracks, { sharing: me.shareLocation })}</div>
       <div class="hint"><ol>
         <li>Install <b>OwnTracks</b> from the App Store or Google Play.</li>
         <li>Open its settings and set the mode to <b>HTTP</b>.</li>
@@ -308,7 +368,13 @@ function ownTracksSheet() {
       <label class="field"><span>User ID / username</span><div class="code" data-copy-v>${esc(me.name)}</div></label>
       <label class="field"><span>Password (token)</span><div class="code" data-copy-v data-tok>${esc(me.owntracksToken || '')}</div></label>
       <p class="hint">Tap a value to copy it. Friends who share will also show up inside OwnTracks. The token is separate from your Tabi password; make a new one if it leaks.</p>
+      <p class="hint">To test it, tap the upload button (the arrow at the top) in OwnTracks. The status at the top of this sheet changes as soon as Tabi hears from it.</p>
       <button class="btn small" data-reset>Make a new token</button>`,
+  });
+  // Live status while you're setting it up
+  const off = on('owntracks', () => {
+    if (s.closed) return off();
+    s.el.querySelector('[data-ot-live]').innerHTML = ownTracksBadge(state.me.owntracks, { sharing: state.me.shareLocation });
   });
   s.el.querySelectorAll('[data-copy-v]').forEach((c) => c.onclick = () => copy(c.textContent.trim()));
   s.el.querySelector('[data-reset]').onclick = async () => {
