@@ -136,6 +136,7 @@ function handle(m) {
       state.online = m.online; state.activity = m.activity; state.config = m.config || {};
       state.subgroups = m.subgroups || [];
       state.notifications = m.notifications || []; state.unread = m.unread || 0;
+      state.expenseReset = m.expenseReset || null;
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
       for (const o of state.outbox) applyLocal(o.op, o.data); // keep unsent edits visible
@@ -179,6 +180,8 @@ function handle(m) {
       emit('notifs', { fresh: m.item }); persistSoon(); break;
     }
     case 'notif.unread': state.unread = m.unread; emit('notifs'); persistSoon(); break;
+    case 'owntracks.status': if (state.me) state.me.owntracks = m.status; emit('owntracks'); persistSoon(); break;
+    case 'expense.resetInfo': state.expenseReset = m.info; emit('expense-reset'); break;
     case 'notif.prefs': if (state.me) state.me.notifyPrefs = m.prefs; emit('notif-prefs'); persistSoon(); break;
     case 'kicked': emit('unauthorized'); break;
   }

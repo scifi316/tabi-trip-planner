@@ -129,11 +129,13 @@ function viewOverview(v) {
         ['Light style', `<span class="mono">${esc(o.config.styleLight)}</span>`], ['Dark style', `<span class="mono">${esc(o.config.styleDark)}</span>`],
         ['Offline download limit', `${o.config.offlineTileLimit} tiles per press`], ['Map files cached in this browser', '<span id="tilecache">…</span>']])}
         <button class="btn small" id="test-style" style="margin-top:10px">Test map style from this browser</button> <span class="hint" id="style-result"></span></section>
+      <section class="panel wide" id="exp-panel"><h3>Expenses</h3><p class="hint">Loading…</p></section>
     </div>
     <h3 style="margin:20px 0 8px;font-size:14px;color:var(--ink-2)">Connected right now (${o.clients.length})</h3>
     <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Connected</th><th>IP</th><th>Device</th></tr></thead><tbody>
       ${o.clients.map((cl) => `<tr><td>${esc(cl.user)}</td><td>${ago(cl.since)}</td><td class="mono">${esc(cl.ip || '')}</td><td class="wrap">${esc(cl.ua)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="4">Nobody has the app open</td></tr>'}
     </tbody></table></div>`;
+  renderExpensePanel();
   caches?.open('tabi-map-v1').then((cch) => cch.keys()).then((k) => { const el = $('#tilecache'); if (el) el.textContent = String(k.length); }).catch(() => { const el = $('#tilecache'); if (el) el.textContent = 'not available'; });
   $('#test-style').onclick = async () => {
     const out = $('#style-result');
@@ -149,6 +151,45 @@ function viewOverview(v) {
     }
     out.textContent = res.join('; ');
   };
+}
+
+// The console's only write action: clear all expenses (typed confirmation), and undo the last clear.
+let expMsg = '';
+async function renderExpensePanel() {
+  const el = $('#exp-panel');
+  if (!el) return;
+  let d;
+  try { d = await get('/api/dev/expenses'); } catch (e) { el.innerHTML = `<h3>Expenses</h3><p class="hint">${esc(e.message)}</p>`; return; }
+  const c = d.counts, total = c.expenses + c.payments, last = d.last;
+  el.innerHTML = `<h3>Expenses</h3>
+    <p class="hint" style="margin-top:0">${c.expenses} expense${c.expenses === 1 ? '' : 's'} (${c.private} private) and ${c.payments} payment${c.payments === 1 ? '' : 's'}.
+      Clearing removes them for everyone so balances start from zero, and tells the people involved. The last clear can be undone.</p>
+    <div class="exp-actions">
+      <select class="input" id="exp-scope" aria-label="What to clear"><option value="all">Everything (${total})</option><option value="shared">Shared only (${total - c.private})</option></select>
+      <input class="input" id="exp-confirm" placeholder="Type CLEAR" autocomplete="off" spellcheck="false" aria-label="Type CLEAR to confirm">
+      <button class="btn small danger-fill" id="exp-clear" disabled>Clear expenses</button>
+    </div>
+    ${last ? `<p class="hint" style="margin:12px 0 0">Last cleared ${ago(last.at)} by ${esc(last.by)}: ${last.count} expense${last.count === 1 ? '' : 's'}. <button class="btn small" id="exp-restore">Bring them back</button></p>` : ''}
+    <p class="hint" id="exp-result" role="status">${esc(expMsg)}</p>`;
+  const confirmEl = $('#exp-confirm'), btn = $('#exp-clear');
+  confirmEl.oninput = () => { btn.disabled = confirmEl.value.trim().toUpperCase() !== 'CLEAR' || !total; };
+  const post = async (path, body) => {
+    const r = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    return j;
+  };
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try { const j = await post('/api/dev/expenses/reset', { scope: $('#exp-scope').value, confirm: 'CLEAR' }); expMsg = `Cleared ${j.count}.`; }
+    catch (e) { expMsg = e.message; }
+    await refreshOverview(); renderExpensePanel();
+  };
+  $('#exp-restore')?.addEventListener('click', async () => {
+    try { const j = await post('/api/dev/expenses/restore', { batch: last.batch }); expMsg = `Brought back ${j.count}.`; }
+    catch (e) { expMsg = e.message; }
+    await refreshOverview(); renderExpensePanel();
+  });
 }
 
 let devMap = null, devMarkers = new Map(), maplibre = null;

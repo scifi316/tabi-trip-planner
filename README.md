@@ -22,6 +22,8 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - **Walk there**: walking directions in Google Maps.
   - **Their plan for today**, and their full itinerary (shared stops plus their subgroup's).
   - **Money**: what you owe each other, your expenses together, and settle up.
+- [x] **Clusters**: as you zoom out, nearby places group into one marker with a count and a ring split by status colour. Tapping one zooms to fit everything in it. If they're all at the same spot, it lists them instead. The place you have open always stays visible, and the day's numbered stops stay separate until you zoom out past city level.
+- [x] Markers stay pinned to their spot while you zoom and pan.
 - [x] Layer filter to choose which statuses show on the map.
 - [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
@@ -56,7 +58,16 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Live sync over WebSockets. Edits made offline are queued and sent when the connection returns.
 - [x] Opt-in location sharing while the app is open, with an optional "keep screen on".
 - [x] Always-on sharing through the free **OwnTracks** app (built-in endpoint). Friends also show up inside OwnTracks.
+  - Settings shows what Tabi last heard from OwnTracks for you:
+    - **Working**, with the time, battery and accuracy
+    - **Not heard lately**: nothing for 6 hours
+    - **Failing**: wrong token
+    - **Not saved**: sharing is off
+    - **Not set up**
+  - The setup sheet updates live, so you can test it by tapping upload in OwnTracks.
+  - The username isn't case-sensitive.
 - [x] Activity feed, and admin tools to manage members.
+- [x] **Clear all expenses** (admins, in Settings): everything or shared ones only, with typed confirmation and an Undo. The last clear can also be undone later from Settings. Everyone involved is notified.
 - [x] **Profile photos**: pick a photo, move, zoom and rotate it in a circle, and save it at 240, 320 (default) or 640 pixels. It's cropped and compressed on the phone (WebP, usually under 10 KB), and the server only accepts square images up to 640×640 and 512 KB. Replacing or removing a photo deletes the old file. Shown on map bubbles, friend chips and everywhere else your initials were.
 - [x] **Notifications**, each with its own switch in Settings:
   - added to or taken out of a subgroup, or a subgroup you're in changes or ends
@@ -83,8 +94,8 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Export the trip as KML or JSON.
 
 ### Developer console
-- [x] `/dev`, behind its own `DEV_KEY`. It's read-only and updates live.
-  - **Overview:** server health and failover state, data counts, settings, and who has the app open.
+- [x] `/dev`, behind its own `DEV_KEY`. It updates live, and is read-only apart from clearing expenses.
+  - **Overview:** server health and failover state, data counts, settings, and who has the app open. It can also clear all expenses (type CLEAR) and undo the last clear.
   - **Locations:** a map with trails, plus every location update with its source, accuracy, battery and delay.
   - **OwnTracks:** every request with its result. Wrong token, unknown user, sharing off, or stored.
   - **Places:** the full table, including removed places and who removed them.
@@ -149,6 +160,7 @@ public/            No-build PWA (plain ES modules)
   js/notifications.js  Notification list, red ! badge, app icon badge, settings switches
   js/photo.js      Profile photo cropper (move, zoom, rotate, 240/320/640 px)
   js/friends.js    Friends list and friend card;  js/dev.js  developer console
+  js/owntracks.js  OwnTracks status in plain words (working, failing, not heard lately, not set up)
   js/receipt.js    Receipt text parser;  js/ocr.js  on-device OCR
   js/tour.js       First-run tips
   js/settings.js   Account, devices, sharing, theme, offline maps, trip admin

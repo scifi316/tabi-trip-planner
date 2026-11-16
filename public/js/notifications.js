@@ -59,6 +59,8 @@ export async function openTarget(n) {
   } else if (ref.type === 'user' && userById(ref.id) && +ref.id !== state.me?.id) {
     emit('go', 'map');
     (await import('./friends.js')).openFriend(+ref.id, { pinpoint: true });
+  } else if (ref.type === 'reset') {
+    emit('go', 'money');
   } else if (ref.type === 'adds' || ref.type === 'import') {
     emit('go', 'itinerary');
   }

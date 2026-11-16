@@ -182,5 +182,10 @@ export function openDb(dataDir) {
   add('sessions', 'user_agent', 'TEXT');
   add('users', 'avatar', 'TEXT');          // blob key of the profile photo
   add('users', 'notify_prefs', 'TEXT');    // JSON: { kind: true|false }, missing kinds use defaults
+  add('users', 'ot_status', 'TEXT');       // last OwnTracks result: stored | bad-token | ignored-sharing-off | ignored-<type>
+  add('users', 'ot_status_at', 'INTEGER'); // when that message arrived
+  add('users', 'ot_ok_at', 'INTEGER');     // when OwnTracks last delivered a location that was saved
+  add('users', 'ot_info', 'TEXT');         // JSON: battery, accuracy, trigger, device, app version of the last message
+  add('expenses', 'reset_batch', 'TEXT');  // set when "Clear all expenses" removed it, so that clear can be undone
   return db;
 }

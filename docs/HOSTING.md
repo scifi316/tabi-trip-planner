@@ -203,7 +203,7 @@ docker compose start
 
 ## Developer console
 
-`https://trip.sanechristmas.party/dev?devkey=<DEV_KEY>` opens a read-only console. Open it once per device; the browser then remembers it for 30 days, and you can go straight to `/dev`. It updates live.
+`https://trip.sanechristmas.party/dev?devkey=<DEV_KEY>` opens the developer console. Open it once per device; the browser then remembers it for 30 days, and you can go straight to `/dev`. It updates live.
 
 It shows:
 - server and failover health
@@ -213,6 +213,8 @@ It shows:
 - sign-ins (including failed ones) and other activity
 - the server's calls to other services
 - the server log
+
+Its one action is **clearing all expenses**, under Overview → Expenses. You type CLEAR to confirm, and can choose everything or shared ones only. The last clear can be undone there or by an admin in Settings. Trip admins can do the same from Settings.
 
 Things to know:
 - **It shows everyone's location**, so only share the key with people you'd trust with that.
