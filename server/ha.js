@@ -68,8 +68,9 @@ export function createHA({ s3, dataDir, node, priority = 'primary', env = proces
         if (canTake) {
           const next = { holder: node, priority, epoch: (lease?.epoch || 0) + 1, acquiredAt: t, expiresAt: t + TTL };
           const r = await s3.put('lease.json', JSON.stringify(next), { contentType: 'application/json', timeout: LEASE_IO, ...(etag ? { ifMatch: etag } : { ifNoneMatch: true }) });
+          if (!r.ok) log(`[ha] someone else changed the lease first (HTTP ${r.status}); retrying`);
           if (r.ok) {
-            Object.assign(st, { role: 'leader', epoch: next.epoch, etag: r.etag, acquiredAt: t, lastRenewOk: t, holder: node, error: null });
+            Object.assign(st, { role: 'leader', epoch: next.epoch, etag: r.etag, lease: next, acquiredAt: t, lastRenewOk: t, holder: node, error: null });
             log(`[ha] ${node} is now the leader (epoch ${next.epoch})`);
             if (priority === 'primary') await s3.del('handoff.json').catch(() => {});
             return st.epoch;
@@ -160,17 +161,25 @@ export function createHA({ s3, dataDir, node, priority = 'primary', env = proces
       if (renewing) return;
       renewing = true;
       try {
-        const { lease, etag } = await readLease();
-        if (!lease || lease.holder !== node || lease.epoch !== st.epoch) return stepDown(`lease now held by ${lease?.holder || 'nobody'}`);
         if (priority === 'backup') {
           const h = await s3.get('handoff.json', { timeout: LEASE_IO });
           const req = h && parse(h.body);
           if (req && req.at > st.acquiredAt) return stepDown(`primary ${req.requestedBy} is back`, { handoffTo: req.requestedBy });
         }
+        // Renew against the version we wrote last; only a real takeover changes it.
         const t = Date.now();
-        const r = await s3.put('lease.json', JSON.stringify({ ...lease, expiresAt: t + TTL }), { contentType: 'application/json', ifMatch: etag, timeout: LEASE_IO });
-        if (!r.ok) return stepDown('lease changed while renewing');
+        const next = { ...st.lease, expiresAt: t + TTL };
+        let r = await s3.put('lease.json', JSON.stringify(next), { contentType: 'application/json', ifMatch: st.etag, timeout: LEASE_IO });
+        if (!r.ok) {
+          const { lease, etag } = await readLease();
+          if (!lease || lease.holder !== node || lease.epoch !== st.epoch) return stepDown(`lease now held by ${lease?.holder || 'nobody'}`);
+          // Still ours: the stored version tag didn't match (storage quirk). Retry once with the current one.
+          log(`[ha] lease version mismatch (HTTP ${r.status}, had ${st.etag}, storage has ${etag}); retrying`);
+          r = await s3.put('lease.json', JSON.stringify(next), { contentType: 'application/json', ifMatch: etag, timeout: LEASE_IO });
+          if (!r.ok) return stepDown(`storage refused the conditional lease update (HTTP ${r.status}); see docs/HOSTING.md troubleshooting`);
+        }
         st.etag = r.etag;
+        st.lease = next;
         st.lastRenewOk = t;
         st.error = null;
       } catch (e) {

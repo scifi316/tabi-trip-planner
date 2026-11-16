@@ -45,7 +45,7 @@ export class S3 {
   }
 
   async req(method, key, { body, headers = {}, timeout = 20000 } = {}) {
-    return this.client.fetch(this.url(key), { method, body, headers, signal: AbortSignal.timeout(timeout) });
+    return this.client.fetch(this.url(key), { method, body, headers: { 'accept-encoding': 'identity', ...headers }, signal: AbortSignal.timeout(timeout) });
   }
 
   // Returns { body: Buffer, etag, meta } or null when missing
@@ -53,14 +53,14 @@ export class S3 {
     const r = await this.req('GET', key, { timeout });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`S3 GET ${key}: ${r.status}`);
-    return { body: Buffer.from(await r.arrayBuffer()), etag: r.headers.get('etag'), meta: metaFrom(r.headers) };
+    return { body: Buffer.from(await r.arrayBuffer()), etag: strongTag(r.headers.get('etag')), meta: metaFrom(r.headers) };
   }
 
   async head(key) {
     const r = await this.req('HEAD', key);
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`S3 HEAD ${key}: ${r.status}`);
-    return { etag: r.headers.get('etag'), meta: metaFrom(r.headers), size: +r.headers.get('content-length') };
+    return { etag: strongTag(r.headers.get('etag')), meta: metaFrom(r.headers), size: +r.headers.get('content-length') };
   }
 
   // Conditional put: ifMatch = etag (replace only that version), ifNoneMatch = true (create only).
@@ -68,12 +68,12 @@ export class S3 {
   async put(key, body, { contentType = 'application/octet-stream', meta = {}, ifMatch, ifNoneMatch, timeout } = {}) {
     const headers = { 'content-type': contentType };
     for (const [k, v] of Object.entries(meta)) headers[`x-amz-meta-${k}`] = String(v);
-    if (ifMatch) headers['if-match'] = ifMatch;
+    if (ifMatch) headers['if-match'] = strongTag(ifMatch);
     if (ifNoneMatch) headers['if-none-match'] = '*';
     const r = await this.req('PUT', key, { body, headers, timeout: timeout || 120000 });
-    if (r.status === 412 || r.status === 409) return { ok: false, conflict: true };
+    if (r.status === 412 || r.status === 409) return { ok: false, conflict: true, status: r.status };
     if (!r.ok) throw new Error(`S3 PUT ${key}: ${r.status} ${(await r.text()).slice(0, 200)}`);
-    return { ok: true, etag: r.headers.get('etag') };
+    return { ok: true, etag: strongTag(r.headers.get('etag')) };
   }
 
   async del(key) {
@@ -81,6 +81,10 @@ export class S3 {
     if (!r.ok && r.status !== 404) throw new Error(`S3 DELETE ${key}: ${r.status}`);
   }
 }
+
+// Cloudflare's edge marks ETags weak (W/"…") when it compresses a response, but conditional writes
+// only match the strong form. We ask for uncompressed responses and strip the W/ just in case.
+const strongTag = (t) => (t ? String(t).replace(/^W\//, '') : t);
 
 function metaFrom(h) {
   const meta = {};
