@@ -1,0 +1,39 @@
+# Alternative primary on Fly.io in Tokyo (the main guide uses DigitalOcean; see docs/HOSTING.md).
+#   fly launch --no-deploy --copy-config        (first time; pick an app name)
+#   fly volumes create tabi_data --region nrt --size 1
+#   fly secrets set ACCESS_KEY=... TUNNEL_TOKEN=... S3_ENDPOINT=... S3_BUCKET=... S3_ACCESS_KEY_ID=... S3_SECRET_ACCESS_KEY=...
+#   fly deploy
+app = "tabi-trip"            # change to the name you picked
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HA_MODE = "on"
+  HA_NODE = "fly-tokyo"
+  HA_PRIORITY = "primary"
+  TRUST_PROXY = "true"
+  PORT = "8080"
+  DATA_DIR = "/data"
+
+[mounts]
+  source = "tabi_data"
+  destination = "/data"
+
+# No public services: traffic arrives through the Cloudflare Tunnel that the app starts while it's leader.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+[[restart]]
+  policy = "always"
+
+[checks]
+  [checks.alive]
+    type = "http"
+    port = 8080
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"

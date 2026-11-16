@@ -1,143 +1,137 @@
 # Tabi: group trip planner for Japan
 
-A private, self-hosted web app for a group of friends travelling together. It works like a stripped-down Google Maps that the whole group shares:
+A private, self-hosted web app for a group of friends travelling together: a shared map and itinerary, voting on places, live locations, subgroups, and shared expenses with receipt scanning. It's a PWA, so there's no App Store. Open the link and add it to your home screen.
 
-- **Map** with everyone's saved places, live friend bubbles, search across Japan, and a "line strip" for the selected day. The strip shows each stop like a station on a train line, with the number of stops left.
-- **Itinerary** for each day of the trip, filtered by Confirmed, Maybe, Suggested, Visited, Missed and Vetoed. Each day's plan can be reordered.
-- **Voting** on every place: want to go, not keen, or veto. You choose the veto rule and can turn on auto-confirm.
-- **Live sync** over WebSockets. Everyone signs in with their own name, and edits made offline sync when you reconnect.
-- **Location sharing** that each person opts into. It works inside the app, or always-on through the free OwnTracks app.
-- **Import** from Google My Maps (by link or KML/KMZ), pasted Google, Apple or OSM links, Google Takeout, GeoJSON, GPX and CSV.
-- **Offline maps** using free OpenFreeMap vector tiles, cached on the phone.
-- **Directions** open in Google Maps, which has the best Japanese transit data and costs nothing.
-- Light and dark mode, plus map labels in English, Japanese or both.
-
-It's a PWA, so there's no App Store or Play Store. Open the URL and add it to your home screen.
+- **Run it locally:** `npm install && npm start`, then open http://localhost:8080
+- **Host it properly** (your domain, private link, a DigitalOcean droplet in Singapore with your home server as backup): see [docs/HOSTING.md](docs/HOSTING.md). One script sets up each server: `deploy/setup.sh`.
 
 ---
 
-## 1. Run it
+## Features
 
-You need **Node.js 22.13 or newer**. There are no native modules and no database server; data is stored in a SQLite file using Node's built-in `node:sqlite`.
+### Map
+- [x] Full-screen MapLibre map with free OpenFreeMap vector tiles. Labels can be in English, Japanese or both.
+- [x] Your avatar at the top left shows that you're signed in, and whether you're connected or offline.
+- [x] Search across Japan (Photon/OpenStreetMap). The search bar also accepts pasted map links.
+- [x] Press and hold the map (or right-click on a computer) to drop a pin.
+- [x] Place markers coloured by status. Each confirmed stop on the selected day is a numbered "station".
+- [x] **Day line strip**: the day's stops drawn like a train line, with a count of stops left, visited stops filled in, and the next stop pulsing.
+- [x] Friend bubbles with last-seen times, plus a row of chips to jump to each friend.
+- [x] Layer filter to choose which statuses show on the map.
+- [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
-```bash
-npm install
-npm start            # http://localhost:8080
-```
+### Itinerary
+- [x] Day picker that works as a calendar, with "All days" and "Unscheduled" options.
+- [x] Status filters: Confirmed, Maybe, Suggested, Visited, Missed (computed automatically, plus Skipped) and Vetoed.
+- [x] Reorder each day's plan. Setting a time slots a stop in among the other timed stops.
+- [x] Votes: want to go, not keen, or veto.
+  - Veto rules: one veto removes a place, a majority is needed, or a veto counts as a "no".
+  - Optional auto-confirm once a set number of people want to go.
+- [x] **Everyone can add and remove places.** Removing asks for confirmation. Removed places move to **Previously interested**, which only admins see; admins can bring them back or delete them for good.
+- [x] Directions open in Google Maps (transit or walking), so no paid APIs are needed.
 
-Or with Docker:
+### Subgroups
+- [x] Make a subgroup when the group splits up, for the whole trip or a range of days.
+- [x] Anyone can add or remove anyone. Adding someone moves them out of any overlapping subgroup.
+- [x] Assign stops to a subgroup with "Who's going". Each subgroup gets its own line on the map strip.
+- [x] Subgroup chips on the map jump to where that subgroup's members are now. Friend bubbles are ringed in their subgroup's colour.
 
-```bash
-docker compose up -d --build     # data is kept in ./data
-```
+### Money
+- [x] Shared expenses, or **private** ones that only the payer and the people in the split can see.
+- [x] Split equally, by exact amounts, by shares, or **item by item**. Tax, service and discounts are spread in proportion.
+- [x] **Receipt and screenshot uploads**, compressed on the phone and stored with the expense.
+- [x] **Read receipt**: on-device OCR (Tesseract, Japanese and English) fills in the shop, date, total and line items. Then you tick who had what.
+- [x] Multiple currencies. Exchange rates are looked up automatically (ECB data via frankfurter.app) and can be edited.
+- [x] Balances: what each person owes you or is owed, the group totals, and the **fewest payments to settle up**. Record payments in one tap.
+- [x] Export expenses as CSV.
 
-Open the app and the first screen sets up the trip: name, dates, and your admin account. Then go to **Settings → Invite friends → Share link**.
+### People, location and sync
+- [x] Each person has their own login. Invite friends with a link.
+- [x] Live sync over WebSockets. Edits made offline are queued and sent when the connection returns.
+- [x] Opt-in location sharing while the app is open, with an optional "keep screen on".
+- [x] Always-on sharing through the free **OwnTracks** app (built-in endpoint). Friends also show up inside OwnTracks.
+- [x] Activity feed, and admin tools to manage members.
 
-## 2. Give it HTTPS (needed for GPS)
+### Getting places in
+- [x] Google **My Maps**, by share link or KML/KMZ export. Layers are mapped to days automatically ("Day 2", "3/14", "2日目").
+- [x] Links from Google Maps (including `maps.app.goo.gl`), Apple Maps and OpenStreetMap, plus `geo:` URIs and raw coordinates.
+- [x] Google Takeout saved places (GeoJSON or CSV), GPX and CSV files.
+- [x] Places already in the trip are detected and skipped.
 
-Browsers only allow location access, service workers (offline mode) and "Add to Home Screen" on **https://** addresses. `localhost` is the only exception. Pick one of these options:
+### App
+- [x] Light and dark mode, either following the phone or set by hand.
+- [x] Offline: the app opens with no connection. Map areas you've viewed are cached, and you can **save maps around all your places** ahead of time. Receipt images are cached too.
+- [x] **First-run tips** for each screen, which can be skipped and replayed from Settings.
+- [x] Export the trip as KML or JSON.
 
-| Option | Good for | How |
-|---|---|---|
-| **Cloudflare Tunnel** (free) | A home PC or Raspberry Pi, no port forwarding | Create a tunnel in the Cloudflare Zero Trust dashboard and point it at `http://tabi:8080`. Paste the token into `docker-compose.yml`, then run `docker compose --profile tunnel up -d`. You need a domain on Cloudflare. |
-| **Tailscale Funnel** (free) | Quickest setup | `tailscale funnel 8080` gives you `https://<machine>.<tailnet>.ts.net`. Friends don't need Tailscale for Funnel. |
-| **Caddy** on a VPS | A cheap VPS (Hetzner, Fly.io, etc.) | Use the Caddyfile `tabi.example.com { reverse_proxy localhost:8080 }`. Caddy gets the certificate automatically. |
+### Hosting and security
+- [x] Self-hosted Node.js app with SQLite (built into Node). The only server dependencies are `ws` and `aws4fetch`.
+- [x] **Private link gate**: without the secret key, the site returns "Not found".
+- [x] Cookie sessions (HttpOnly, Secure, SameSite), stored hashed, cached in memory, with sliding expiry. You can see your signed-in devices and sign the others out.
+- [x] **High availability**: a cloud primary (DigitalOcean Singapore, or Fly.io Tokyo) and your home server as backup.
+  - A lease in Cloudflare R2 decides which one serves.
+  - The database is snapshotted continuously, and receipts are stored in R2.
+  - Failover and hand-back are automatic, and only the serving machine runs the Cloudflare Tunnel.
+- [x] Docker image (amd64 and arm64) with cloudflared included.
+- [x] One-command server setup (`deploy/setup.sh`): swap, Docker, firewall, deploy key, secrets and start-up. Updating is one command too (`deploy/update.sh`).
 
-When it runs behind any of these proxies, set `TRUST_PROXY=true` so login rate limiting sees real client IPs. WebSockets work through all three.
+## Future improvements
 
-> The server has to stay up during the trip. A home machine on residential internet is fine. Phones keep a cached copy of the plan and work offline if it goes down.
+Ideas, roughly in priority order:
 
-## 3. Put it on everyone's phone
+- [ ] **Push notifications** for "the group is leaving in 10 minutes", new votes and payment requests (Web Push works on iOS 16.4+ home-screen apps).
+- [ ] **Show totals in each person's home currency** (USD, EUR and so on) alongside yen.
+- [ ] **Better receipt reading**: try a cloud OCR option for faded thermal receipts, and recognise the tax-rate markers on Japanese receipts (※ and 軽 for the 8% rate) to split tax exactly.
+- [ ] **Travel times between stops** on the day line, from a self-hosted router (Valhalla or OSRM) or a cached estimate from distance.
+- [ ] **Opening hours and closed days** for each place, pulled from OpenStreetMap, with a warning when a stop is planned on a closed day.
+- [ ] **Drag-and-drop reordering** in the itinerary and on the line strip.
+- [ ] **Polls** for "where should we eat tonight?" with a deadline.
+- [ ] **Shared notes and packing lists** per day.
+- [ ] **Read-only share link** for family back home (no location, no money).
+- [ ] **Fully self-hosted map tiles**: a Japan PMTiles extract served by the app, so nothing depends on OpenFreeMap.
+- [ ] **Push-based sync** between the two hosts (streaming the database's write-ahead log) to reduce failover data loss from about 15 seconds to near zero.
+- [ ] **Multiple trips** per server.
+- [ ] **End-to-end tests in CI** with GitHub Actions.
 
-- **iPhone:** open the link in Safari, tap Share, then **Add to Home Screen**.
-- **Android:** open it in Chrome, open the ⋮ menu, then **Add to Home screen** (or Install app).
+---
 
-## 4. Location sharing
-
-Sharing is **opt-in per person**: Settings → Location sharing → *Share my location with the group*. When you turn it off, your last position is deleted from the server.
-
-**What a web app can and can't do:** browsers (especially iOS Safari) stop GPS when a web app is in the background or the screen is locked. Inside Tabi, your position updates while the app is open. Turning on *Keep screen on* helps while you're walking around.
-
-**For always-on sharing like Find My or Life360, use OwnTracks.** It's a free, open-source app for iOS and Android that sends location in the background with good battery behaviour. Tabi has an OwnTracks endpoint built in:
-
-1. Install OwnTracks and set **Mode: HTTP**.
-2. In Tabi, go to Settings → *Set up OwnTracks*. Copy the URL (`https://your-host/api/owntracks`), your user ID (your Tabi name) and your token into OwnTracks.
-3. Choose *Significant changes* monitoring to save battery, or *Move* for more detail.
-
-Friends who share also appear inside OwnTracks. Each person's token is separate from their password and can be regenerated.
-
-## 5. Getting places in
-
-**Google My Maps (recommended for planning):**
-- *By link:* in My Maps, click Share and set it to "Anyone with the link can view". Then use Add places → **My Maps** and paste the link (it contains `mid=`). The server downloads the KML.
-- *By file (private maps):* in the My Maps menu, choose ⋮ → **Export to KML/KMZ**, then use Add places → **File**.
-- Each **layer** in the map can go to a trip day. Layers named like `Day 2`, `3/14`, `2026-03-14` or `2日目` are matched to days automatically.
-
-**Links:** paste one or more links into Add places → Paste links, or straight into the search bar. These all work: `maps.app.goo.gl` short links, full Google Maps place URLs, Apple Maps, OpenStreetMap, `geo:` URIs and plain `lat, lng`. Short links are followed on the server. If a link only has a name, the place is found by searching for it and marked "found by name" so you can double-check the pin.
-
-**Google Takeout "Saved" lists:** `Saved Places.json` (GeoJSON) imports directly. List CSVs often have only URLs, and Tabi looks those up one by one.
-
-**Other files:** GeoJSON, GPX waypoints, and CSV with `name, lat, lng` columns. Optional columns are `notes`, `url`, `day` (YYYY-MM-DD), `time` (HH:MM), `layer` and `address`.
-
-**On the map:** press and hold anywhere (or right-click on a computer) to drop a pin, or search. Search uses Photon (OpenStreetMap data), limited to Japan.
-
-## 6. How planning works
-
-| Status | Meaning |
-|---|---|
-| Suggested | Someone added it. This is the default. |
-| Maybe | Interested, not committed. |
-| Confirmed | On the plan. When it has a day, it appears as a numbered stop on that day's line. |
-| Visited | Done. It fills in on the line. |
-| Missed | Shown automatically when a confirmed stop's day has passed in Japan time and nobody marked it visited. |
-| Skipped | Deliberately dropped on the day. It's filtered together with Missed. |
-| Vetoed | Removed by veto. Hidden from the map by default. Anyone can tap *Bring back*. |
-
-- **Votes:** each person has one vote per place: want to go, not keen, or veto. Admins choose the veto rule: *one veto removes it*, *majority*, or *veto counts as a no*. Admins can also set *auto-confirm*, so a place is confirmed once N people want to go.
-- **Order:** use the itinerary's *Reorder* button. Setting a time slots the stop among the day's other timed stops.
-- **Activity:** Settings → Recent activity shows who added, confirmed or vetoed what.
-
-## 7. Offline
-
-- The app itself, and the last synced plan, open offline after one visit.
-- Map areas you've browsed are cached automatically. Before you fly, use **Settings → Offline maps → Save maps around all places** (on Wi-Fi). It saves an overview of Japan plus street-level detail about 1 km around every place. Each press fetches up to 3,000 tiles, following OpenFreeMap's guidance for offline downloads, so press it again if it says more remain.
-- Changes made offline (votes, edits, new places) are queued and sent when you reconnect. The avatar dot at the top left is green when connected and amber when offline.
-
-## 8. Configuration
-
-Configure with environment variables, or a `.env` file next to `package.json` (see `.env.example`).
-
-| Variable | Default | |
-|---|---|---|
-| `PORT` | `8080` | |
-| `DATA_DIR` | `./data` | Holds the SQLite database. Back up this folder. |
-| `TRUST_PROXY` | `false` | Set `true` behind a reverse proxy. |
-| `MAP_STYLE_LIGHT` / `MAP_STYLE_DARK` | OpenFreeMap Liberty / Dark | Any MapLibre style URL. Use this if you self-host tiles. |
-| `OFFLINE_TILE_LIMIT` | `3000` | Tiles fetched per "Save maps" press. |
-
-**Fully self-hosted tiles (optional):** for zero reliance on public services, extract Japan from the Protomaps daily build (`pmtiles extract … --bbox=122.9,24.0,146.0,45.6`, roughly 1–2 GB) or self-host OpenFreeMap. Then point `MAP_STYLE_*` at your style.
-
-**Backups:** in-app, use Settings → Export (KML opens in Google My Maps and Google Earth; JSON is a full dump). On the server, copy `data/tabi.db` (stop the server first, or copy the `-wal` file too).
-
-## 9. Architecture
+## Project layout
 
 ```
-server/index.js   HTTP + REST (auth, search proxy, link resolver, My Maps, OwnTracks, export) + WebSocket hub
-server/db.js      SQLite schema (users, sessions, places, votes, locations, activity, geocache)
-server/links.js   Map-link parsing and short-link resolution
-public/           No-build PWA (plain ES modules)
-  js/store.js     State, WebSocket sync, offline outbox
-  js/map.js       MapLibre map, markers, friend bubbles, day line strip, search
-  js/itinerary.js Day picker, filters, voting, reorder
-  js/settings.js  Account, sharing, theme, offline maps, trip admin
-  js/add.js       Add/import flows;  js/parsers.js  KML/KMZ/GeoJSON/GPX/CSV
-  js/offline.js   Tile pack downloader;  sw.js  Service worker
+server/index.js    Boot: single host or HA (lease, restore, tunnel)
+server/app.js      HTTP API, private-link gate, WebSocket hub, all operations
+server/auth.js     Cookie sessions with an in-memory cache, gate token
+server/ha.js       Leader lease, snapshots, failover and hand-back
+server/s3.js       Minimal S3/R2 client;  server/blobs.js  receipt storage
+server/money.js    Expense validation;  server/links.js  map-link parsing;  server/db.js  schema
+public/            No-build PWA (plain ES modules)
+  js/store.js      State, WebSocket sync, offline outbox
+  js/map.js        Map, markers, friends, day line strip, search
+  js/itinerary.js  Days, filters, voting, reorder, Previously interested
+  js/groups.js     Subgroups
+  js/money.js      Expenses, splits, balances, settle-up
+  js/receipt.js    Receipt text parser;  js/ocr.js  on-device OCR
+  js/tour.js       First-run tips
+  js/settings.js   Account, devices, sharing, theme, offline maps, trip admin
+  sw.js            Service worker
+deploy/setup.sh    One-command server setup (primary or backup);  deploy/update.sh  pull and rebuild
+deploy/droplet/    DigitalOcean primary (compose);  deploy/home/  home-server backup (compose)
+fly.toml           Alternative primary on Fly.io (Tokyo)
+docs/HOSTING.md    Domain, private link, DigitalOcean, home backup, failover runbook
 ```
 
-Dependencies: `ws` (server), `maplibre-gl` and `fflate` (served to the browser from `node_modules`). Passwords are hashed with scrypt. Sessions are random tokens, and only their SHA-256 is stored.
+## Configuration
 
-## 10. Free services used (no API keys)
+All settings are environment variables. They are listed in [`.env.example`](.env.example), and the hosting ones are explained in [docs/HOSTING.md](docs/HOSTING.md).
 
-- **OpenFreeMap:** vector map tiles (© OpenMapTiles, © OpenStreetMap contributors).
-- **Photon by Komoot:** search and reverse geocoding. Queries go through your server, which caches them for 14 days.
-- **Google Maps:** only as outbound links for directions and place pages, plus server-side fetches to resolve share links and download public My Maps KML. No paid APIs are used.
+## Location sharing in a web app
+
+Browsers, iOS Safari in particular, pause GPS when a web app is in the background. Inside Tabi, your position updates while the app is open. For Find My-style sharing, use OwnTracks: go to Settings → *Set up OwnTracks* for the URL, username and token. It's free and open source, and sends location in the background with good battery behaviour.
+
+## Free services used (no API keys)
+
+- **OpenFreeMap**: map tiles (© OpenMapTiles, © OpenStreetMap contributors).
+- **Photon by Komoot**: search. Requests go through your server and are cached there.
+- **frankfurter.app**: exchange rates (European Central Bank data).
+- **Google Maps**: only as outbound links for directions, plus server-side fetches to resolve share links and download public My Maps.
+- **Tesseract.js**: OCR, served from your own server and run on the phone.

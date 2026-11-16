@@ -1,5 +1,6 @@
 // Boot, sign-in screens, navigation and theme.
-import { state, on, emit, api, op, connect, loadCached, setToken, signOutLocal } from './store.js';
+import { state, on, emit, api, op, connect, loadCached, markSignedIn, signOutLocal } from './store.js';
+import { maybeStartTour } from './tour.js';
 import { $, $$, esc, icon, avatar, toast, openSheet, closeAllSheets, closePeekSheets } from './ui.js';
 
 const LOGO = `<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#2B3A67"/>
@@ -59,12 +60,14 @@ const loaded = {};
 async function go(tab) {
   current = tab;
   closePeekSheets();
-  for (const s of ['map', 'itinerary', 'settings']) $(`#screen-${s}`).hidden = s !== tab;
+  for (const s of ['map', 'itinerary', 'money', 'settings']) $(`#screen-${s}`).hidden = s !== tab;
   $$('.tab[data-tab]').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', settings: 'settings' }[tab]}`);
+  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', money: 'yen', settings: 'settings' }[tab]}`);
   if (tab === 'map') (await loaded.map).resizeMap();
   if (tab === 'itinerary') (await loaded.itin).showItinerary();
+  if (tab === 'money') (await loaded.money).showMoney();
   if (tab === 'settings') (await loaded.settings).showSettings();
+  maybeStartTour(tab);
   refreshMeButtons();
   history.replaceState(null, '', tab === 'map' ? '/' : `/#${tab}`);
 }
@@ -91,7 +94,7 @@ function authScreen(mode, { tripName, joinCode } = {}) {
         <label class="field"><span>Last day</span><input class="input" type="date" name="end"></label>
       </div>
       <label class="field"><span>Your name</span><input class="input" name="name" maxlength="24" autocomplete="nickname" required></label>
-      <label class="field"><span>Password</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="4" required></label>
+      <label class="field"><span>Password</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="6" required></label>
       <button class="btn primary">Create trip</button>
       <p class="auth-foot">You will be the trip admin. Afterwards, share the invite link from Settings.</p>`,
     login: `
@@ -101,7 +104,7 @@ function authScreen(mode, { tripName, joinCode } = {}) {
     join: `
       <label class="field"><span>Invite code</span><input class="input num" name="code" value="${esc(joinCode || '')}" autocapitalize="characters" required></label>
       <label class="field"><span>Your name</span><input class="input" name="name" maxlength="24" autocomplete="nickname" required></label>
-      <label class="field"><span>Choose a password</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="4" required></label>
+      <label class="field"><span>Choose a password</span><input class="input" type="password" name="password" autocomplete="new-password" minlength="6" required></label>
       <button class="btn primary">Join trip</button>`,
   }[mode];
   el.innerHTML = `
@@ -120,8 +123,8 @@ function authScreen(mode, { tripName, joinCode } = {}) {
     const btn = form.querySelector('.btn.primary');
     btn.disabled = true;
     try {
-      const { token } = await api(`/api/${mode}`, { method: 'POST', body: data });
-      setToken(token);
+      await api(`/api/${mode}`, { method: 'POST', body: data });
+      markSignedIn();
       history.replaceState(null, '', '/');
       startApp();
     } catch (ex) {
@@ -143,6 +146,7 @@ async function startApp() {
   loaded.map = import('./map.js');
   loaded.itin = import('./itinerary.js');
   loaded.settings = import('./settings.js');
+  loaded.money = import('./money.js');
   await import('./location.js');
   const m = await loaded.map;
   m.initMap();
@@ -160,7 +164,7 @@ async function startApp() {
   refreshMeButtons();
 
   const hash = location.hash.slice(1);
-  go(['itinerary', 'settings'].includes(hash) ? hash : 'map');
+  go(['itinerary', 'money', 'settings'].includes(hash) ? hash : 'map');
   connect();
 }
 
@@ -175,12 +179,13 @@ async function boot() {
   applyTheme();
   const params = new URLSearchParams(location.search);
   const joinCode = params.get('join');
-  if (state.token && !joinCode) {
+  if (state.signedIn && !joinCode) {
     loadCached();
     return startApp(); // works offline from the cached state
   }
   try {
     const s = await api('/api/status');
+    if (s.signedIn && !joinCode) { markSignedIn(); return startApp(); }
     if (!s.setup) return authScreen('setup');
     authScreen(joinCode ? 'join' : 'login', { tripName: s.tripName, joinCode });
   } catch {
