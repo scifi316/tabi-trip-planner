@@ -24,7 +24,8 @@ const PRIORITY = env.HA_PRIORITY === 'backup' ? 'backup' : 'primary';
 const HA_ON = /^(1|true|on|yes)$/i.test(env.HA_MODE || '');
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 
-const s3 = s3FromEnv(env);
+let s3;
+try { s3 = s3FromEnv(env); } catch (e) { console.error(`Storage settings problem: ${e.message}`); process.exit(1); }
 if (HA_ON && !s3) {
   console.error('HA_MODE is on but S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are not all set.');
   process.exit(1);

@@ -3,6 +3,9 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 const store = new Map();
 let down = false;
+// Like Cloudflare's edge: compressible responses get a weak ETag (W/"...") when the client accepts gzip,
+// and conditional writes only match strong ETags.
+const WEAK = process.env.MOCK_WEAK_ETAGS !== '0';
 http.createServer(async (req, res) => {
   if (req.url === '/__down') { down = true; return res.end('down'); }
   if (req.url === '/__up') { down = false; return res.end('up'); }
@@ -13,7 +16,8 @@ http.createServer(async (req, res) => {
   const obj = store.get(key);
   if (req.method === 'GET' || req.method === 'HEAD') {
     if (!obj) { res.writeHead(404); return res.end(); }
-    res.writeHead(200, { etag: obj.etag, 'content-length': obj.body.length, ...obj.meta });
+    const weak = WEAK && /gzip|br/.test(req.headers['accept-encoding'] || '');
+    res.writeHead(200, { etag: weak ? `W/${obj.etag}` : obj.etag, 'content-length': obj.body.length, ...obj.meta });
     return res.end(req.method === 'HEAD' ? undefined : obj.body);
   }
   if (req.method === 'PUT') {

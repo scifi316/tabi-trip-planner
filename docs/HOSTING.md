@@ -197,6 +197,19 @@ It pulls `main`, rebuilds and restarts. The serving machine uploads a final snap
   - Secrets live in `.env`, which only root can read.
 - **Optional extra lock:** you can put **Cloudflare Access** (email one-time codes, free for up to 50 users) in front of `trip.sanechristmas.party`. If you do, add a bypass policy for `/api/owntracks`, because the OwnTracks app can't log in to Access.
 
+## Troubleshooting
+
+| Log line | Cause | Fix |
+|---|---|---|
+| `lease check failed: Invalid URL` or `Storage settings problem` | `S3_ENDPOINT` is malformed | It must be `https://<account-id>.r2.cloudflarestorage.com`, with nothing after `.com` |
+| `lease check failed: … 403` | Wrong R2 keys, or the token isn't allowed on the bucket | Fix `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` |
+| `lease check failed: … 404` | The bucket name is wrong | Fix `S3_BUCKET` |
+| `stepping down: lease changed while renewing` (immediately after starting) | Version 1.1.0 handled R2's version tags wrongly | Update with `bash /opt/tabi/deploy/update.sh` |
+| `Provided Tunnel token is not valid` | Wrong `TUNNEL_TOKEN` | Paste the `eyJ…` token from the tunnel's install command |
+| `failed to sufficiently increase receive buffer size` | Harmless warning | Optional: `printf 'net.core.rmem_max=7500000\nnet.core.wmem_max=7500000\n' > /etc/sysctl.d/99-tunnel.conf && sysctl --system` |
+
+After editing `.env`, run `docker compose up -d --force-recreate` in the same folder.
+
 ## Restoring an older backup
 
 ```bash

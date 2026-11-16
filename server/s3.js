@@ -1,9 +1,30 @@
 // Minimal S3-compatible client (Cloudflare R2, AWS S3, MinIO, Backblaze B2) using signed fetch.
 import { AwsClient } from 'aws4fetch';
 
+const clean = (v) => String(v ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+
+// Accepts common paste mistakes: missing https://, quotes, a trailing slash, or the bucket on the end.
+export function normalizeEndpoint(raw, bucket) {
+  let v = clean(raw);
+  if (!v) return { error: 'S3_ENDPOINT is empty.' };
+  if (!/^https?:\/\//i.test(v)) v = `https://${v}`;
+  let u;
+  try { u = new URL(v); } catch { return { error: `S3_ENDPOINT "${clean(raw)}" isn't a web address. It should look like https://<account-id>.r2.cloudflarestorage.com` }; }
+  const path = u.pathname.replace(/\/+$/, '');
+  if (path && path !== '/') {
+    if (bucket && path === `/${bucket}`) return { endpoint: u.origin, note: `S3_ENDPOINT included the bucket name; using ${u.origin}` };
+    return { error: `S3_ENDPOINT should end at the domain (${u.origin}), with the bucket in S3_BUCKET.` };
+  }
+  return { endpoint: u.origin };
+}
+
 export function s3FromEnv(env = process.env) {
-  if (!env.S3_ENDPOINT || !env.S3_BUCKET || !env.S3_ACCESS_KEY_ID || !env.S3_SECRET_ACCESS_KEY) return null;
-  return new S3(env);
+  const bucket = clean(env.S3_BUCKET);
+  if (!clean(env.S3_ENDPOINT) || !bucket || !clean(env.S3_ACCESS_KEY_ID) || !clean(env.S3_SECRET_ACCESS_KEY)) return null;
+  const ep = normalizeEndpoint(env.S3_ENDPOINT, bucket);
+  if (ep.error) throw new Error(ep.error);
+  if (ep.note) console.log(ep.note);
+  return new S3({ ...env, S3_ENDPOINT: ep.endpoint, S3_BUCKET: bucket, S3_ACCESS_KEY_ID: clean(env.S3_ACCESS_KEY_ID), S3_SECRET_ACCESS_KEY: clean(env.S3_SECRET_ACCESS_KEY) });
 }
 
 export class S3 {
@@ -24,7 +45,7 @@ export class S3 {
   }
 
   async req(method, key, { body, headers = {}, timeout = 20000 } = {}) {
-    return this.client.fetch(this.url(key), { method, body, headers, signal: AbortSignal.timeout(timeout) });
+    return this.client.fetch(this.url(key), { method, body, headers: { 'accept-encoding': 'identity', ...headers }, signal: AbortSignal.timeout(timeout) });
   }
 
   // Returns { body: Buffer, etag, meta } or null when missing
@@ -32,14 +53,14 @@ export class S3 {
     const r = await this.req('GET', key, { timeout });
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`S3 GET ${key}: ${r.status}`);
-    return { body: Buffer.from(await r.arrayBuffer()), etag: r.headers.get('etag'), meta: metaFrom(r.headers) };
+    return { body: Buffer.from(await r.arrayBuffer()), etag: strongTag(r.headers.get('etag')), meta: metaFrom(r.headers) };
   }
 
   async head(key) {
     const r = await this.req('HEAD', key);
     if (r.status === 404) return null;
     if (!r.ok) throw new Error(`S3 HEAD ${key}: ${r.status}`);
-    return { etag: r.headers.get('etag'), meta: metaFrom(r.headers), size: +r.headers.get('content-length') };
+    return { etag: strongTag(r.headers.get('etag')), meta: metaFrom(r.headers), size: +r.headers.get('content-length') };
   }
 
   // Conditional put: ifMatch = etag (replace only that version), ifNoneMatch = true (create only).
@@ -47,12 +68,12 @@ export class S3 {
   async put(key, body, { contentType = 'application/octet-stream', meta = {}, ifMatch, ifNoneMatch, timeout } = {}) {
     const headers = { 'content-type': contentType };
     for (const [k, v] of Object.entries(meta)) headers[`x-amz-meta-${k}`] = String(v);
-    if (ifMatch) headers['if-match'] = ifMatch;
+    if (ifMatch) headers['if-match'] = strongTag(ifMatch);
     if (ifNoneMatch) headers['if-none-match'] = '*';
     const r = await this.req('PUT', key, { body, headers, timeout: timeout || 120000 });
-    if (r.status === 412 || r.status === 409) return { ok: false, conflict: true };
+    if (r.status === 412 || r.status === 409) return { ok: false, conflict: true, status: r.status };
     if (!r.ok) throw new Error(`S3 PUT ${key}: ${r.status} ${(await r.text()).slice(0, 200)}`);
-    return { ok: true, etag: r.headers.get('etag') };
+    return { ok: true, etag: strongTag(r.headers.get('etag')) };
   }
 
   async del(key) {
@@ -60,6 +81,10 @@ export class S3 {
     if (!r.ok && r.status !== 404) throw new Error(`S3 DELETE ${key}: ${r.status}`);
   }
 }
+
+// Cloudflare's edge marks ETags weak (W/"…") when it compresses a response, but conditional writes
+// only match the strong form. We ask for uncompressed responses and strip the W/ just in case.
+const strongTag = (t) => (t ? String(t).replace(/^W\//, '') : t);
 
 function metaFrom(h) {
   const meta = {};
