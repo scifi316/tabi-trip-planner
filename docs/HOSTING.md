@@ -223,12 +223,27 @@ Things to know:
 - **Live history is kept in memory**, so the event lists start fresh when the server restarts.
 - **Existing servers:** `update.sh` adds a generated `DEV_KEY` to `.env` the first time it runs and prints a reminder. Copy the same line into the other server's `.env` so the key works whichever machine is serving. To see it: `grep DEV_KEY /opt/tabi/deploy/droplet/.env`.
 
+## Forgotten passwords and removed members
+
+Nobody has to make a new account any more.
+
+- **With a recovery code:** after updating to 1.5, everyone is asked once to set one up ("Protect your account"). If they later forget their password, they choose *Forgot password?* on the sign-in screen and enter their name, code and a new password. They get a fresh code, and their other devices are signed out.
+- **Without one:**
+  1. They tap *Ask a trip admin*, which sends the admins a notification.
+  2. An admin opens *Settings → People → their name → Reset link* and sends them the link privately.
+  3. The link works once, within 24 hours.
+
+  If you're the only admin and you're the one locked out, make the link in the developer console under *Overview → Accounts*.
+- **Removing someone, or someone leaving,** keeps their account as a *former member*. They can't sign in, but every expense they're part of still counts. Former members are listed in Settings, where an admin can *Bring back* or *Merge into…* the account they made after rejoining under a new name.
+- **People you removed before 1.5** were deleted outright, but their expenses stayed in the database, which threw balances off. On the first start of 1.5 they come back as former members, named from the activity log. The server log shows a `restored former member` line for each. If they've since rejoined under another name, use *Merge into…* to move the old expenses onto their current account.
+
 ## Sessions and security
 
 - **Sign-in** uses an HttpOnly, Secure, SameSite=Lax cookie. Only a SHA-256 hash of each session token is stored, in the database, so sessions survive restarts and failovers.
 - **Session lookups** are cached in memory for 5 minutes.
 - **Expiry:** sessions slide forward with use and expire after 180 days of inactivity (`SESSION_DAYS`).
 - **Sign-outs:** changing your password signs out your other devices. *Settings → Signed-in devices* shows every session and can sign out the others.
+- **Forgotten passwords:** see the next section.
 - **Cross-site protection:** requests that change data, and the WebSocket, are refused when they come from another site.
 - **Rate limits:** sign-in and join attempts are limited per IP. Behind the tunnel, the real IP comes from `CF-Connecting-IP`.
 - **Server hardening:**

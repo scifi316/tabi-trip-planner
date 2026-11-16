@@ -171,6 +171,16 @@ export function openDb(dataDir) {
       read_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, id);
+
+    -- One-time links an admin makes so someone who forgot their password can set a new one.
+    CREATE TABLE IF NOT EXISTS password_resets (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER
+    );
   `);
 
   // Column migrations for databases created by earlier versions
@@ -187,5 +197,31 @@ export function openDb(dataDir) {
   add('users', 'ot_ok_at', 'INTEGER');     // when OwnTracks last delivered a location that was saved
   add('users', 'ot_info', 'TEXT');         // JSON: battery, accuracy, trigger, device, app version of the last message
   add('expenses', 'reset_batch', 'TEXT');  // set when "Clear all expenses" removed it, so that clear can be undone
+  add('users', 'removed_at', 'INTEGER');   // removed from (or left) the trip: kept so their expenses and balances stay right
+  add('users', 'removed_by', 'INTEGER');
+  add('users', 'recovery_hash', 'TEXT');   // hashed recovery code for "Forgot password?"
+  add('users', 'recovery_set_at', 'INTEGER');
+  add('users', 'recovery_snooze', 'INTEGER'); // "Remind me later" on the set-up prompt, until this time
+  restoreFormerMembers(db);
   return db;
+}
+
+// Before 1.5, removing someone deleted their account row, but their expenses, shares and places stayed.
+// Balances then didn't add up. Bring those people back as former members (they can't sign in), named
+// from the activity log where possible, so every expense points at someone again. Safe to run every start.
+function restoreFormerMembers(db) {
+  const ids = db.prepare(`
+    SELECT paid_by id FROM expenses UNION SELECT user_id FROM expense_shares UNION SELECT created_by FROM places WHERE created_by IS NOT NULL
+  `).all().map((r) => r.id).filter((id) => Number.isInteger(id) && id > 0);
+  const missing = ids.filter((id) => !db.prepare('SELECT 1 FROM users WHERE id = ?').get(id));
+  for (const id of missing) {
+    const joined = db.prepare("SELECT text FROM activity WHERE user_id = ? AND text LIKE '% joined the trip' ORDER BY id LIMIT 1").get(id);
+    let base = joined ? joined.text.replace(/ joined the trip$/, '').trim() : '';
+    if (!base) base = `Former member ${id}`;
+    let name = base, k = 1;
+    while (db.prepare('SELECT 1 FROM users WHERE name = ?').get(name)) name = `${base} (left${k++ > 1 ? ` ${k - 1}` : ''})`;
+    db.prepare('INSERT INTO users(id, name, color, pass_hash, created_at, removed_at) VALUES(?, ?, ?, ?, ?, ?)')
+      .run(id, name.slice(0, 40), '#8A8F98', '!', Date.now(), Date.now());
+    console.log(`[db] restored former member #${id} as "${name}" so their expenses still count`);
+  }
 }

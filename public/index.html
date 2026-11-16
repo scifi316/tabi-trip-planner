@@ -33,7 +33,7 @@
       <section id="screen-map" class="screen screen-map" aria-label="Map">
         <div id="map" class="map"></div>
         <header class="map-top">
-          <button class="me-btn" data-me-btn aria-label="Your account"></button>
+          <button class="me-btn" data-me-btn aria-label="Your account" data-tip="Your account, notifications and profile photo"></button>
           <div class="search" role="search">
             <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
             <input id="search-input" type="search" inputmode="search" autocomplete="off" enterkeyhint="search"
@@ -45,13 +45,16 @@
         </header>
         <div id="search-results" class="search-results" hidden></div>
         <div id="friend-row" class="friend-row" aria-label="Friends sharing location"></div>
+        <div id="follow-chip" class="follow-chip" role="status" hidden></div>
         <div class="map-controls">
-          <button class="ctl" id="ctl-locate" aria-label="Show my location"><svg class="i"><use href="#i-locate"/></svg></button>
-          <button class="ctl" id="ctl-fit" aria-label="Fit all stops"><svg class="i"><use href="#i-fit"/></svg></button>
-          <button class="ctl" id="ctl-layers" aria-label="Choose which places to show" aria-expanded="false"><svg class="i"><use href="#i-layers"/></svg></button>
+          <button class="ctl" id="ctl-locate" aria-label="Show my location. Tap again to follow you." aria-pressed="false"
+                  data-tip="Show my location. Tap again, or tap your blue dot, to follow you as you move."><svg class="i"><use href="#i-locate"/></svg></button>
+          <button class="ctl" id="ctl-people" aria-label="Show everyone sharing their location" data-tip="Show everyone who’s sharing their location"><svg class="i"><use href="#i-users"/></svg></button>
+          <button class="ctl" id="ctl-fit" aria-label="Fit all places" data-tip="Zoom to fit all the places on the map"><svg class="i"><use href="#i-fit"/></svg></button>
+          <button class="ctl" id="ctl-layers" aria-label="Choose which places to show" aria-expanded="false" data-tip="Choose which places show on the map (confirmed, maybe, vetoed…)"><svg class="i"><use href="#i-layers"/></svg></button>
         </div>
         <div id="layers-pop" class="popover layers-pop" hidden></div>
-        <button id="fab-add" class="fab" aria-label="Add places"><svg class="i"><use href="#i-plus"/></svg></button>
+        <button id="fab-add" class="fab" aria-label="Add places" data-tip="Add places: search, paste a Google Maps link, or import from My Maps"><svg class="i"><use href="#i-plus"/></svg></button>
         <div id="line-strip" class="line-strip" aria-label="Today's stops"></div>
       </section>
 
@@ -65,9 +68,9 @@
       <button class="tab" data-tab="itinerary"><svg class="i"><use href="#i-calendar"/></svg><span>Itinerary</span></button>
       <button class="tab" data-tab="money"><svg class="i"><use href="#i-yen"/></svg><span>Money</span></button>
       <button class="tab" data-tab="settings"><svg class="i"><use href="#i-settings"/></svg><span>Settings</span></button>
-      <button class="tab collapse" id="nav-collapse" aria-label="Hide navigation"><svg class="i"><use href="#i-chevron-down"/></svg></button>
+      <button class="tab collapse" id="nav-collapse" aria-label="Hide navigation" data-tip="Hide the navigation bar for more map"><svg class="i"><use href="#i-chevron-down"/></svg></button>
     </nav>
-    <button id="nav-handle" class="nav-handle" aria-label="Show navigation" hidden>
+    <button id="nav-handle" class="nav-handle" aria-label="Show navigation" data-tip="Show the navigation bar" hidden>
       <svg class="i"><use href="#i-map"/></svg><svg class="i small"><use href="#i-chevron-up"/></svg>
     </button>
   </div>

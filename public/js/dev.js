@@ -129,6 +129,7 @@ function viewOverview(v) {
         ['Light style', `<span class="mono">${esc(o.config.styleLight)}</span>`], ['Dark style', `<span class="mono">${esc(o.config.styleDark)}</span>`],
         ['Offline download limit', `${o.config.offlineTileLimit} tiles per press`], ['Map files cached in this browser', '<span id="tilecache">…</span>']])}
         <button class="btn small" id="test-style" style="margin-top:10px">Test map style from this browser</button> <span class="hint" id="style-result"></span></section>
+      <section class="panel wide" id="acct-panel"><h3>Accounts</h3><p class="hint">Loading…</p></section>
       <section class="panel wide" id="exp-panel"><h3>Expenses</h3><p class="hint">Loading…</p></section>
     </div>
     <h3 style="margin:20px 0 8px;font-size:14px;color:var(--ink-2)">Connected right now (${o.clients.length})</h3>
@@ -136,6 +137,7 @@ function viewOverview(v) {
       ${o.clients.map((cl) => `<tr><td>${esc(cl.user)}</td><td>${ago(cl.since)}</td><td class="mono">${esc(cl.ip || '')}</td><td class="wrap">${esc(cl.ua)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="4">Nobody has the app open</td></tr>'}
     </tbody></table></div>`;
   renderExpensePanel();
+  renderAccountsPanel();
   caches?.open('tabi-map-v1').then((cch) => cch.keys()).then((k) => { const el = $('#tilecache'); if (el) el.textContent = String(k.length); }).catch(() => { const el = $('#tilecache'); if (el) el.textContent = 'not available'; });
   $('#test-style').onclick = async () => {
     const out = $('#style-result');
@@ -151,6 +153,36 @@ function viewOverview(v) {
     }
     out.textContent = res.join('; ');
   };
+}
+
+// Accounts: who's who, whether they can recover a forgotten password, and one-time reset links.
+const resetLinks = {}; // user id -> url made in this console session
+async function renderAccountsPanel() {
+  const el = $('#acct-panel');
+  if (!el) return;
+  try { await refreshPeople(); } catch (e) { el.innerHTML = `<h3>Accounts</h3><p class="hint">${esc(e.message)}</p>`; return; }
+  el.innerHTML = `<h3>Accounts</h3>
+    <p class="hint" style="margin-top:0">Former members can’t sign in, but their expenses still count. A reset link lets someone set a new password once, within 24 hours, and signs them out everywhere else.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead><tbody>
+    ${people.map((p) => `<tr>
+      <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
+      <td>${p.removedAt ? `<span class="badge">former member</span><div class="hint">since ${fmtDateTime(p.removedAt)}</div>` : p.admin ? '<span class="badge good">admin</span>' : 'member'}${!p.hasPassword ? '<div class="hint">no password yet</div>' : ''}</td>
+      <td>${p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>'}</td>
+      <td class="num">${p.sessions?.n || 0}</td>
+      <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? ago(p.sessions.last) : '–'}</td>
+      <td>${p.removedAt ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
+        : `<button class="btn small" data-reset-link="${p.id}">${p.resetLink ? 'New reset link' : 'Reset link'}</button>${p.resetLink ? `<div class="hint">a link is live until ${fmtTime(p.resetLink.expires_at)}</div>` : ''}`}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  el.querySelectorAll('[data-reset-link]').forEach((b) => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await fetch('/api/dev/reset-link', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: +b.dataset.resetLink }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error);
+      resetLinks[b.dataset.resetLink] = `${location.origin}/?${j.gate ? `gate=${j.gate}&` : ''}reset=${j.token}`;
+    } catch (e) { b.disabled = false; b.textContent = e.message; return; }
+    renderAccountsPanel();
+  });
 }
 
 // The console's only write action: clear all expenses (typed confirmation), and undo the last clear.

@@ -7,7 +7,7 @@ const SHELL = [
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
-  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js',
+  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
   '/vendor/maplibre-gl/maplibre-gl-worker.mjs',
   '/vendor/fflate/browser.js',

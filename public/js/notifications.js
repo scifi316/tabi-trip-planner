@@ -12,6 +12,9 @@ export const KINDS = {
   people: { label: 'People', help: 'Someone joins the trip, or you’re made an admin.', icon: 'users' },
   newPlaces: { label: 'New places', help: 'Anyone adds or imports places. Off to start with, because it gets busy while you’re planning.', icon: 'plus' },
   removed: { label: 'Removed places', help: 'Someone removes a place, so you can bring it back from Previously interested. Admins only.', icon: 'trash', admin: true },
+  help: { label: 'Sign-in help', help: 'Someone who forgot their password asks for a reset link. Admins only.', icon: 'lock', admin: true },
+  // Always on: changes to your own password or recovery code. Not a switch.
+  security: { label: 'Your account', icon: 'lock', locked: true },
 };
 
 export const unreadCount = () => state.unread || 0;
@@ -59,6 +62,11 @@ export async function openTarget(n) {
   } else if (ref.type === 'user' && userById(ref.id) && +ref.id !== state.me?.id) {
     emit('go', 'map');
     (await import('./friends.js')).openFriend(+ref.id, { pinpoint: true });
+  } else if (ref.type === 'help' && userById(ref.id)) {
+    emit('go', 'settings');
+    (await import('./account.js')).openResetLink(userById(ref.id));
+  } else if (ref.type === 'account') {
+    await emit('go', 'settings');
   } else if (ref.type === 'reset') {
     emit('go', 'money');
   } else if (ref.type === 'adds' || ref.type === 'import') {
@@ -93,7 +101,7 @@ on('notifs', (d) => {
 export function prefsHtml() {
   const prefs = state.me?.notifyPrefs || {};
   const admin = state.me?.isAdmin;
-  return Object.entries(KINDS).filter(([, k]) => !k.admin || admin).map(([key, k]) => `
+  return Object.entries(KINDS).filter(([, k]) => !k.locked && (!k.admin || admin)).map(([key, k]) => `
     <div class="row"><div class="grow"><div class="label">${esc(k.label)}</div><div class="help">${esc(k.help)}</div></div>
       <label class="switch"><input type="checkbox" data-notify="${key}" ${prefs[key] ? 'checked' : ''} aria-label="${esc(k.label)}"><span></span></label></div>`).join('');
 }

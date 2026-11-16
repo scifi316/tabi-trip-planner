@@ -11,6 +11,7 @@ import { getMap } from './map.js';
 import { prefsHtml, bindPrefs } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
 import { ownTracksBadge } from './owntracks.js';
+import { openRecoverySetup, openResetLink } from './account.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -23,7 +24,7 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery'].forEach((e) => on(e, maybeRender));
 // Keep "3 min ago" honest while Settings is open
 setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 
@@ -55,8 +56,14 @@ export function render() {
       <div class="row stack"><div class="label">Your colour</div>
         <div class="colors" style="margin-top:8px">${COLORS.map((c) => `<button class="color-dot" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${me.color === c}"></button>`).join('')}</div></div>
       <div class="row"><div class="grow label">Password</div><button class="btn small" data-password>Change</button></div>
+      <div class="row"><div class="grow"><div class="label">Account recovery</div><div class="help">${me.recovery?.set
+        ? `Recovery code saved ${ago(me.recovery.setAt)}. If you forget your password, use it on the sign-in screen.`
+        : 'Not set up. If you forget your password, a trip admin will have to send you a reset link.'}</div></div>
+        <button class="btn small ${me.recovery?.set ? '' : 'primary'}" data-recovery>${me.recovery?.set ? 'New code' : 'Set up'}</button></div>
       <div class="row"><div class="grow"><div class="label">Signed-in devices</div><div class="help">See where you’re signed in, and sign out the others.</div></div><button class="btn small" data-devices>Devices</button></div>
       <div class="row"><div class="grow label">Sign out of this device</div><button class="btn small danger" data-signout>Sign out</button></div>
+      <div class="row"><div class="grow"><div class="label">Leave the trip</div><div class="help">Your expenses and balances stay, so everyone’s totals remain right.</div></div>
+        <button class="btn small danger" data-leave>Leave…</button></div>
     </div></section>
 
     <section class="section" data-section="location"><h2>Location sharing</h2><div class="card">
@@ -132,11 +139,19 @@ export function render() {
         <button class="btn small" data-subgroups>${icon('users')}Manage</button></div>
       ${state.users.map((u) => `
         <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
-          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}</div></div>
+          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${admin && !u.hasRecovery ? ', no recovery code' : ''}</div></div>
           ${u.isAdmin ? '<span class="tag">Admin</span>' : ''}
           ${admin && u.id !== me.id ? `<button class="btn small" data-member="${u.id}">Manage</button>` : ''}
         </div>`).join('')}
     </div></section>
+    ${admin && state.formerUsers.length ? `
+    <section class="section" data-section="former"><h2>Former members</h2><div class="card">
+      <div class="row stack"><div class="help">Removed, or left the trip. They can’t sign in, but their expenses still count in everyone’s balances.</div></div>
+      ${state.formerUsers.map((u) => `
+        <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}</div><div class="help">Left ${ago(u.removedAt)}</div></div>
+          <button class="btn small" data-merge="${u.id}">Merge into…</button>
+          <button class="btn small" data-bring-back="${u.id}">Bring back</button></div>`).join('')}
+    </div></section>` : ''}
 
     <section class="section"><h2>Places data</h2><div class="card">
       <div class="row"><div class="grow"><div class="label">Import places</div><div class="help">Google My Maps, links, KML, GeoJSON, GPX, CSV</div></div>
@@ -178,6 +193,16 @@ function bind(el) {
     if (r.ok === false) throw new Error(r.error);
   });
   el.querySelector('[data-password]').onclick = passwordSheet;
+  el.querySelector('[data-recovery]').onclick = () => openRecoverySetup({ replacing: !!me.recovery?.set });
+  el.querySelector('[data-leave]').onclick = leaveSheet;
+  el.querySelectorAll('[data-merge]').forEach((b) => b.onclick = () => mergeSheet(userById(+b.dataset.merge)));
+  el.querySelectorAll('[data-bring-back]').forEach((b) => b.onclick = async () => {
+    const u = userById(+b.dataset.bringBack);
+    const r = await op('user.restore', { id: u.id });
+    if (r.ok === false) return toast(r.error);
+    if (r.canSignIn) toast(`${u.name} is back on the trip and can sign in with their old password`);
+    else { toast(`${u.name} is back. They need a password first, so here’s a reset link.`); openResetLink(u); }
+  });
   el.querySelectorAll('[data-photo]').forEach((b) => b.onclick = () => openPhotoEditor());
   bindPrefs(el);
   el.querySelector('[data-signout]').onclick = async () => {
@@ -384,6 +409,41 @@ function ownTracksSheet() {
   };
 }
 
+// A former member who rejoined under a new name: move their old expenses onto the new account.
+function mergeSheet(old) {
+  const counts = [...state.expenses.values()].filter((e) => e.paidBy === old.id || e.shares.some((x) => x.userId === old.id)).length;
+  const s = openSheet({
+    title: `Merge ${old.name}’s old account`,
+    sub: 'For someone who was removed and joined again under a new name.',
+    body: `
+      <p class="hint" style="margin-top:0">${counts ? `${counts} expense${counts === 1 ? '' : 's'} you can see` : 'Any expenses'}, places and history from <b>${esc(old.name)}</b> move to the account you choose. Balances add up exactly as before. ${esc(old.name)} then disappears from the list. This can’t be undone.</p>
+      <label class="field"><span>Move everything to</span><select class="input" data-into><option value="">Choose a person…</option>${state.users.map((u) => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select></label>`,
+    foot: '<button class="btn" data-close>Cancel</button><button class="btn danger-fill" data-go disabled>Merge</button>',
+  });
+  const sel = s.el.querySelector('[data-into]'), go = s.el.querySelector('[data-go]');
+  sel.onchange = () => { go.disabled = !sel.value; go.textContent = sel.value ? `Merge into ${userById(+sel.value).name}` : 'Merge'; };
+  go.onclick = async () => {
+    go.disabled = true;
+    const r = await op('user.merge', { from: old.id, into: +sel.value });
+    if (r.ok === false) { toast(r.error); go.disabled = false; return; }
+    toast(`Merged. ${old.name}’s expenses now count for ${userById(+sel.value).name}.`);
+    s.close();
+  };
+}
+
+function leaveSheet() {
+  const s = openSheet({
+    title: 'Leave the trip?',
+    body: `<p class="hint" style="margin-top:0;font-size:14.5px">You’ll be signed out everywhere and won’t be able to sign in. Your expenses stay, so everyone’s balances remain right, and you still owe or are owed what you do now. A trip admin can bring your account back later.</p>`,
+    foot: '<button class="btn" data-close>Stay</button><button class="btn danger-fill" data-go>Leave the trip</button>',
+  });
+  s.el.querySelector('[data-go]').onclick = async () => {
+    const r = await op('user.leave');
+    if (r.ok === false) return toast(r.error);
+    s.close();
+  };
+}
+
 function memberSheet(id) {
   const u = userById(id);
   if (!u) return;
@@ -392,9 +452,12 @@ function memberSheet(id) {
     body: `<div class="card" style="margin:0">
       <div class="row"><div class="grow"><div class="label">Trip admin</div><div class="help">Admins can change trip details, invite links and members.</div></div>
         ${sw('data-admin', u.isAdmin, 'Trip admin')}</div>
-      <div class="row"><div class="grow"><div class="label">Remove from trip</div><div class="help">They are signed out and their votes are removed. Places they added stay.</div></div>
+      <div class="row"><div class="grow"><div class="label">Forgot their password?</div><div class="help">Make a one-time link that lets ${esc(u.name)} set a new one. Their account and expenses stay. ${u.hasRecovery ? `${esc(u.name)} also has a recovery code they can use themselves.` : `${esc(u.name)} hasn’t set up a recovery code.`}</div></div>
+        <button class="btn small" data-reset-link>Reset link</button></div>
+      <div class="row"><div class="grow"><div class="label">Remove from trip</div><div class="help">They’re signed out and can’t sign in, and their votes are removed. Their expenses and balances stay, and you can bring them back later.</div></div>
         <button class="btn small danger" data-remove>Remove</button></div></div>`,
   });
+  s.el.querySelector('[data-reset-link]').onclick = () => { s.close(); openResetLink(u); };
   s.el.querySelector('[data-admin]').onchange = async (e) => { const r = await op('user.admin', { id, on: e.target.checked }); if (r.ok === false) toast(r.error); };
   const rm = s.el.querySelector('[data-remove]');
   rm.onclick = async () => {

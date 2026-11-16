@@ -1,5 +1,5 @@
 // Money: shared and private expenses, who owes whom, receipts with OCR, settle-up payments.
-import { state, on, op, api, emit, userById, groupById, groupsOn, myGroupOn, today, tripDays, livePlaces } from './store.js';
+import { state, on, op, api, emit, userById, isFormer, groupById, groupsOn, myGroupOn, today, tripDays, livePlaces } from './store.js';
 import { esc, icon, avatar, openSheet, toast, fmtDay, uid, confirmSheet, debounce } from './ui.js';
 import { meButton } from './main.js';
 import { getTable, savedTable, marketRate, ownRate, setOwnRate, homeCurrency, rememberHome, rememberFrom, savedFrom, niceAmounts, parseAmount } from './fx.js';
@@ -92,7 +92,7 @@ export function render() {
   const all = visibleExpenses();
   const { net, pair } = ledger(all);
   const myNet = net[me] || 0;
-  const people = state.users.filter((u) => u.id !== me)
+  const people = everyone().filter((u) => u.id !== me)
     .map((u) => ({ u, v: pair(u.id, me) })) // >0: they owe me
     .filter((x) => Math.abs(x.v) >= 1);
   if (withUser && !userById(withUser)) withUser = null;
@@ -288,18 +288,24 @@ function rowHtml(e) {
     <span class="money-right">${right}</span></button>`;
 }
 
+// Someone who was removed or left: their expenses still count, so they still appear here, marked as gone.
+const who = (u) => `${esc(u?.name || 'Someone')}${u && isFormer(u.id) ? ' <span class="left-tag">left the trip</span>' : ''}`;
+const plain = (u) => `${esc(u?.name || 'Someone')}${u && isFormer(u.id) ? ' (left)' : ''}`;
+const everyone = () => [...state.users, ...state.formerUsers];
+
 function balancesHtml(net) {
-  const rows = state.users.map((u) => ({ u, v: net[u.id] || 0 })).sort((a, b) => b.v - a.v);
+  // Former members only show while their balance isn't zero
+  const rows = everyone().filter((u) => !isFormer(u.id) || Math.abs(net[u.id] || 0) >= 1).map((u) => ({ u, v: net[u.id] || 0 })).sort((a, b) => b.v - a.v);
   const plan = settlePlan(net);
   const anyPrivate = visibleExpenses().some((e) => e.visibility === 'private');
   return `
     <section class="group"><div class="group-head"><h3>Everyone’s balance</h3><span class="line"></span></div>
-      <div class="list">${rows.map(({ u, v }) => `<div class="item">${avatar(u)}<div class="item-main"><div class="item-name">${esc(u.name)}</div>
+      <div class="list">${rows.map(({ u, v }) => `<div class="item">${avatar(u)}<div class="item-main"><div class="item-name">${who(u)}</div>
         <div class="item-meta">${v > 0 ? 'is owed' : v < 0 ? 'owes' : 'all square'}</div></div>
         <b class="num ${v > 0 ? 'pos' : v < 0 ? 'neg' : 'faint'}" style="padding-right:8px">${v ? fmt(Math.abs(v)) : '–'}</b></div>`).join('')}</div></section>
     <section class="group"><div class="group-head"><h3>Simplest way to settle up</h3><span class="line"></span></div>
       ${plan.length ? `<div class="list">${plan.map((t) => `<div class="item">${avatar(userById(t.from))}<span class="faint">${icon('arrow-down', 'small')}</span>
-        <div class="item-main"><div class="item-name">${esc(userById(t.from)?.name || '?')} pays ${esc(userById(t.to)?.name || '?')}</div><div class="item-meta num">${fmt(t.amount)}</div></div>
+        <div class="item-main"><div class="item-name">${plain(userById(t.from))} pays ${plain(userById(t.to))}</div><div class="item-meta num">${fmt(t.amount)}</div></div>
         <button class="btn small" data-plan="${t.from}:${t.to}:${t.amount}">Record</button></div>`).join('')}</div>`
       : '<p class="hint" style="margin:0 16px">Nobody owes anything.</p>'}
       ${anyPrivate ? `<p class="hint" style="margin:10px 16px 0">${icon('lock', 'small')} Includes private expenses you’re part of. Other people’s private expenses aren’t shown to you, so their totals may differ.</p>` : ''}
@@ -372,7 +378,7 @@ export function openExpense(existing) {
       </div>
 
       <div class="inline-fields">
-        <label class="field"><span>Paid by</span><select class="input" data-paid>${state.users.map((u) => `<option value="${u.id}" ${u.id === d.paidBy ? 'selected' : ''}>${esc(u.name)}${u.id === me ? ' (you)' : ''}</option>`).join('')}</select></label>
+        <label class="field"><span>Paid by</span><select class="input" data-paid>${[...state.users, ...state.formerUsers.filter((u) => u.id === d.paidBy)].map((u) => `<option value="${u.id}" ${u.id === d.paidBy ? 'selected' : ''}>${esc(u.name)}${u.id === me ? ' (you)' : isFormer(u.id) ? ' (left)' : ''}</option>`).join('')}</select></label>
         <label class="field"><span>Date</span><input class="input" type="date" data-date value="${esc(d.date || '')}"></label>
       </div>
 
@@ -440,7 +446,9 @@ export function openExpense(existing) {
     const quick = [['all', 'Everyone', state.users.map((u) => u.id)], ...groupsOn(d.date).map((g) => [g.id, g.name, g.memberIds])];
     $('[data-quick]').innerHTML = quick.map(([k, l, ids]) => `<button class="chip" data-quick-pick="${k}" aria-pressed="${ids.length === participants.length && ids.every((i) => participants.includes(i))}">${esc(l)}</button>`).join('');
     s.el.querySelectorAll('[data-quick-pick]').forEach((b) => b.onclick = () => { participants = quick.find((q) => q[0] === b.dataset.quickPick)[2].slice(); renderWho(); renderSplit(); });
-    $('[data-who]').innerHTML = state.users.map((u) => `<button class="who-chip" data-person="${u.id}" aria-pressed="${participants.includes(u.id)}">${avatar(u)}<span>${esc(u.name)}</span></button>`).join('');
+    // Former members only appear when they're already part of this expense
+    const pickable = [...state.users, ...state.formerUsers.filter((u) => participants.includes(u.id))];
+    $('[data-who]').innerHTML = pickable.map((u) => `<button class="who-chip" data-person="${u.id}" aria-pressed="${participants.includes(u.id)}">${avatar(u)}<span>${esc(u.name)}${isFormer(u.id) ? ' (left)' : ''}</span></button>`).join('');
     s.el.querySelectorAll('[data-person]').forEach((b) => b.onclick = () => {
       const id = +b.dataset.person;
       participants = participants.includes(id) ? participants.filter((x) => x !== id) : [...participants, id];

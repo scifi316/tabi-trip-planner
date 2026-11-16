@@ -54,13 +54,22 @@ function renderList() {
 
 // ---------- one friend ----------
 let currentId = null;
-export function openFriend(id, { pinpoint = false } = {}) {
+let followId = null; // the friend the map is following, if any
+on('follow', (f) => {
+  followId = f?.kind === 'friend' ? f.id : null;
+  if (friendSheet && !friendSheet.closed) renderFriend();
+});
+// follow: pinpoint them and keep them centred as they move (tapping them on the map does this)
+export function openFriend(id, { pinpoint = false, follow = false } = {}) {
   const u = userById(id);
   if (!u) return;
   currentId = +id;
   if (friendSheet && !friendSheet.closed) friendSheet.close();
   friendSheet = openSheet({ peek: true, className: 'friend-sheet', onClose: () => { currentId = null; } });
-  renderFriend().then(() => { if (pinpoint && state.locations[id]) requestAnimationFrame(() => emit('focus-friend', +id)); });
+  renderFriend().then(() => {
+    if (!(pinpoint || follow) || !state.locations[id]) return;
+    requestAnimationFrame(() => { emit('focus-friend', +id); if (follow) emit('follow-friend', +id); });
+  });
 }
 
 async function renderFriend() {
@@ -92,7 +101,9 @@ async function renderFriend() {
         <p class="help">${[loc.acc ? `Accurate to about ${Math.round(loc.acc)} m` : '', loc.batt != null ? `battery ${loc.batt}%` : '', distanceText(loc)].filter(Boolean).join(', ')}</p>
         ${!st.fresh ? `<p class="help">This is where they were ${ago(loc.ts)}. They may have moved since.</p>` : ''}
         <div class="links" style="margin-bottom:0">
-          <button class="btn primary" data-pin>${icon('locate')}Pinpoint</button>
+          ${followId === u.id
+            ? `<button class="btn primary following" data-unfollow aria-pressed="true" data-tip="The map keeps ${esc(u.name)} centred as they move. Tap to stop.">${icon('locate')}Following</button>`
+            : `<button class="btn primary" data-follow aria-pressed="false" data-tip="Zoom to ${esc(u.name)} and keep them centred as they move">${icon('locate')}Follow</button>`}
           <a class="btn" href="https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}&travelmode=walking" target="_blank" rel="noopener">${icon('walk')}Walk there</a>
         </div>`
       : `<p class="help">${u.shareLocation ? `${esc(u.name)} has sharing on, but their phone hasn’t sent a location yet.` : `${esc(u.name)} isn’t sharing their location.`}</p>`}
@@ -120,7 +131,8 @@ async function renderFriend() {
 
   const b = friendSheet.body;
   const toMap = () => { if (document.getElementById('screen-map').hidden) emit('go', 'map'); };
-  b.querySelector('[data-pin]')?.addEventListener('click', () => { toMap(); emit('focus-friend', u.id); });
+  b.querySelector('[data-follow]')?.addEventListener('click', () => { toMap(); emit('focus-friend', u.id); emit('follow-friend', u.id); });
+  b.querySelector('[data-unfollow]')?.addEventListener('click', () => emit('stop-follow'));
   b.querySelector('[data-itin]').onclick = () => { friendSheet.close(); emit('itin-person', u.id); emit('go', 'itinerary'); };
   b.querySelector('[data-money]').onclick = () => { friendSheet.close(); emit('money-with', u.id); emit('go', 'money'); };
   b.querySelector('[data-settle]')?.addEventListener('click', async () => {
