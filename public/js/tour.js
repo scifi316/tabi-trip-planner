@@ -7,7 +7,7 @@ const TOURS = {
     { title: 'Welcome to Tabi', text: 'A quick look around takes about 30 seconds. You can skip it and replay the tips any time from Settings.', welcome: true },
     { sel: '#screen-map [data-me-btn]', title: 'This is you', text: 'Your avatar shows you’re signed in. The dot is green when you’re connected and amber when you’re offline. Changes you make offline sync when you’re back.' },
     { sel: '#screen-map .search', title: 'Search or paste a link', text: 'Search anywhere in Japan, or paste a Google Maps, Apple Maps or My Maps link right here. Press and hold the map to drop a pin.' },
-    { sel: '#friend-row', title: 'Friends and subgroups', text: 'Friends who share their location show up here and on the map. Tap “Split up” when the group heads off in different directions.' },
+    { sel: '#friend-row', title: 'Friends and subgroups', text: 'Tap Friends to find someone on the map, see their plan for the day, or settle up with them. Tap “Split up” when the group heads off in different directions.' },
     { sel: '#line-strip', title: 'The day’s line', text: 'Each circle is a confirmed stop, in order, like stations on a train line. Filled circles are done and the pulsing one is next. Use the arrows to look at other days.' },
     { sel: '#fab-add', title: 'Add places', text: 'Import your Google My Maps, paste a bunch of links, or search.' },
     { sel: '#tabbar', title: 'Get around', text: 'Switch between the map, the itinerary, money and settings. The arrow hides this bar when you want more map.' },

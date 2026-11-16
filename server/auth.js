@@ -103,6 +103,8 @@ export function createAuth({ db, env = process.env, trustProxy = false }) {
         .map((s) => ({ id: s.token_hash.slice(0, 12), createdAt: s.created_at, lastSeen: s.last_seen, device: describeUA(s.user_agent), current: s.token_hash === currentHash }));
     },
     clearCookie: (req) => cookie(req, 'tabi_session', '', 0),
+    makeCookie: cookie,
+    safeEqual,
     purgeExpired() { db.prepare('DELETE FROM sessions WHERE last_seen < ?').run(Date.now() - SESSION_DAYS * DAY); },
   };
 }

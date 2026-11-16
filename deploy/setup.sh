@@ -124,6 +124,8 @@ else
   ask PUBLIC_HOST "Public address" "trip.sanechristmas.party"
   ask ACCESS_KEY "Private-link key (Enter to generate one)" ""
   [[ -n "$ACCESS_KEY" ]] || ACCESS_KEY=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+  ask DEV_KEY "Developer console key (Enter to generate one)" ""
+  [[ -n "$DEV_KEY" ]] || DEV_KEY=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
   ask TUNNEL_TOKEN "Cloudflare Tunnel token" "" secret
   ask S3_ENDPOINT "R2 endpoint (https://<account-id>.r2.cloudflarestorage.com)" ""
   ask S3_BUCKET "R2 bucket" "tabi"
@@ -137,6 +139,7 @@ else
 PUBLIC_HOST=$PUBLIC_HOST
 HA_NODE=$NODE
 ACCESS_KEY=$ACCESS_KEY
+DEV_KEY=$DEV_KEY
 TUNNEL_TOKEN=$TUNNEL_TOKEN
 S3_ENDPOINT=$S3_ENDPOINT
 S3_BUCKET=$S3_BUCKET
@@ -173,6 +176,7 @@ DONE
 if [[ "$ROLE" == primary ]]; then
   cat <<DONE
     • Open https://$PUBLIC_HOST/?key=$ACCESS_KEY to create the trip (keep this link private).
+    • Developer console: https://$PUBLIC_HOST/dev?devkey=\$DEV_KEY (key in $ENV_FILE)
     • Then set up the backup with the same values: docs/HOSTING.md, step 6.
 
 DONE

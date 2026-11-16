@@ -181,7 +181,43 @@ On the droplet first, then the home server:
 bash /opt/tabi/deploy/update.sh
 ```
 
-It pulls `main`, rebuilds and restarts. The serving machine uploads a final snapshot and keeps its lease while it restarts, so updates don't trigger a failover.
+It does three things:
+1. Pulls `main`.
+2. Saves a copy of the live database to `deploy/<droplet|home>/data/backups/`, keeping the last 10.
+3. Rebuilds and restarts.
+
+The serving machine uploads a final snapshot and keeps its lease while it restarts, so updates don't trigger a failover.
+
+**Your data and sign-ins survive updates.** The database lives in `data/` on the server, outside the container. New versions only add tables or columns. Sessions are stored in the database, so nobody has to sign up or sign in again.
+
+To roll back to a backup:
+
+```bash
+docker compose stop
+cp data/backups/tabi-<time>.db data/tabi.db
+rm -f data/tabi.db-wal data/tabi.db-shm
+docker compose start
+```
+
+## Developer console
+
+`https://trip.sanechristmas.party/dev?devkey=<DEV_KEY>` opens a read-only console. Open it once per device; the browser then remembers it for 30 days, and you can go straight to `/dev`. It updates live.
+
+It shows:
+- server and failover health
+- every place, including removed ones
+- a map of everyone's latest positions and recent trails
+- every location update and every **OwnTracks** request, with its result: *stored*, *wrong token*, *unknown user*, or *ignored because sharing is off*
+- sign-ins (including failed ones) and other activity
+- the server's calls to other services
+- the server log
+
+Things to know:
+- **It shows everyone's location**, so only share the key with people you'd trust with that.
+- **The key is separate from the private-link key**, and also gets its holder past the private link.
+- **Without `DEV_KEY` set**, `/dev` doesn't exist.
+- **Live history is kept in memory**, so the event lists start fresh when the server restarts.
+- **Existing servers:** `update.sh` adds a generated `DEV_KEY` to `.env` the first time it runs and prints a reminder. Copy the same line into the other server's `.env` so the key works whichever machine is serving. To see it: `grep DEV_KEY /opt/tabi/deploy/droplet/.env`.
 
 ## Sessions and security
 

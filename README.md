@@ -17,6 +17,11 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Place markers coloured by status. Each confirmed stop on the selected day is a numbered "station".
 - [x] **Day line strip**: the day's stops drawn like a train line, with a count of stops left, visited stops filled in, and the next stop pulsing.
 - [x] Friend bubbles with last-seen times, plus a row of chips to jump to each friend.
+- [x] **Friends button**: everyone in the trip with live/last-seen status and distance. Each friend's card offers:
+  - **Pinpoint**: flies to them, draws how accurate their location is, and follows them as they move.
+  - **Walk there**: walking directions in Google Maps.
+  - **Their plan for today**, and their full itinerary (shared stops plus their subgroup's).
+  - **Money**: what you owe each other, your expenses together, and settle up.
 - [x] Layer filter to choose which statuses show on the map.
 - [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
@@ -64,6 +69,16 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] **First-run tips** for each screen, which can be skipped and replayed from Settings.
 - [x] Export the trip as KML or JSON.
 
+### Developer console
+- [x] `/dev`, behind its own `DEV_KEY`. It's read-only and updates live.
+  - **Overview:** server health and failover state, data counts, settings, and who has the app open.
+  - **Locations:** a map with trails, plus every location update with its source, accuracy, battery and delay.
+  - **OwnTracks:** every request with its result. Wrong token, unknown user, sharing off, or stored.
+  - **Places:** the full table, including removed places and who removed them.
+  - **Activity:** sign-ins (including failed ones), changes and connections.
+  - **Network:** the server's calls to search, R2, Google and exchange rates.
+  - **Server log.**
+
 ### Hosting and security
 - [x] Self-hosted Node.js app with SQLite (built into Node). The only server dependencies are `ws` and `aws4fetch`.
 - [x] **Private link gate**: without the secret key, the site returns "Not found".
@@ -74,6 +89,10 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - Failover and hand-back are automatic, and only the serving machine runs the Cloudflare Tunnel.
 - [x] Docker image (amd64 and arm64) with cloudflared included.
 - [x] One-command server setup (`deploy/setup.sh`): swap, Docker, firewall, deploy key, secrets and start-up. Updating is one command too (`deploy/update.sh`).
+
+## Updating without losing data
+
+Updates never touch your data: the database stays on the server's disk outside the container, and new versions only ever add to it. `deploy/update.sh` also saves a copy of the database to `data/backups/` before rebuilding. Everyone stays signed in. Before each release, a database made with the previous version is upgraded and checked: the same people, places, subgroups, expenses and sessions must all come through.
 
 ## Future improvements
 

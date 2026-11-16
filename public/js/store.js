@@ -319,6 +319,16 @@ export function dayStops(day, groupId = null) {
     .map((p) => ({ place: p, state: p.status === 'visited' ? 'visited' : p.status === 'skipped' ? 'skipped' : (day < t ? 'missed' : 'todo') }));
 }
 
+// A person's own plan: stops for everyone, plus stops for subgroups they belong to.
+export function personSees(place, userId) {
+  if (!place.groupId) return true;
+  const g = groupById(place.groupId);
+  return !g || g.memberIds.includes(+userId);
+}
+export function personDayStops(day, userId) {
+  return dayStops(day).filter((s) => personSees(s.place, userId));
+}
+
 export function defaultDay() {
   const days = tripDays();
   if (!days.length) return null;

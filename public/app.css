@@ -114,9 +114,15 @@ button { cursor: pointer; }
   flex: 1; min-width: 0; height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 14px;
   background: var(--surface); border-radius: 23px; box-shadow: var(--shadow); color: var(--ink-2);
 }
-.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 16px; height: 100%; }
-.search input::-webkit-search-cancel-button { display: none; }
-.search input::placeholder { color: var(--ink-3); }
+.search input {
+  flex: 1; min-width: 0; height: 44px; margin: 0; padding: 0; border: 0; border-radius: 0; outline: 0;
+  -webkit-appearance: none; appearance: none; background: transparent; color: var(--ink);
+  font-size: 16px; line-height: normal; text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+}
+.search input::-webkit-search-cancel-button, .search input::-webkit-search-decoration { -webkit-appearance: none; display: none; }
+.search input::placeholder { color: var(--ink-3); text-overflow: ellipsis; opacity: 1; }
+input[type="search"].input { -webkit-appearance: none; appearance: none; text-overflow: ellipsis; }
+input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none; }
 
 .search-results {
   position: absolute; z-index: 6; top: calc(var(--safe-t) + 62px); left: 10px; right: 10px; max-height: min(60vh, 460px);
@@ -172,6 +178,9 @@ button { cursor: pointer; }
 .maplibregl-ctrl-attrib { font-size: 10px; }
 .maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { bottom: calc(var(--tab-h) + var(--safe-b) + var(--strip-h, 0px) + 4px); transition: bottom .3s var(--ease); }
 .app.nav-collapsed .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 54px); }
+.app.nav-collapsed .maplibregl-ctrl-bottom-left { left: 0; }
+/* The map credit sits bottom-left, away from the Add button; when opened it never runs under the button. */
+.maplibregl-ctrl-bottom-left .maplibregl-ctrl-attrib.maplibregl-compact-show { max-width: calc(100vw - 110px); }
 [data-theme="dark"] .maplibregl-ctrl-attrib { background: rgba(29, 33, 40, .8); color: var(--ink-2); }
 [data-theme="dark"] .maplibregl-ctrl-attrib a { color: var(--ink-2); }
 [data-theme="dark"] .maplibregl-ctrl-attrib-button { filter: invert(1); }
@@ -283,6 +292,9 @@ button { cursor: pointer; }
   .app.nav-collapsed .tabbar { transform: translateX(-110%); }
   .nav-handle { left: 12px; transform: none; }
   .line-strip { left: auto; width: 520px; right: 74px; }
+  /* On wide screens the day strip is on the right, so the credit can sit in the bottom-left corner */
+  .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + 6px); }
+  .app.nav-collapsed .maplibregl-ctrl-bottom-left { left: 100px; } /* clear of the "show navigation" pill */
   .search-results, .map-top { max-width: 560px; }
   .screen-page > .page { max-width: 760px; margin: 0 auto; }
 }
@@ -602,3 +614,36 @@ label.btn { cursor: pointer; }
 .tour-count { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
 .tour-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .tour-actions .btn { height: 38px; }
+
+/* ---------- friends ---------- */
+.friends-btn { padding-left: 10px; font-weight: 700; }
+.friends-btn .i { margin-left: 0; color: var(--accent); }
+.avatar.big { width: 48px; height: 48px; font-size: 18px; }
+.friend-row-item { width: 100%; border: 0; background: none; text-align: left; color: inherit; }
+.friend-row-item:hover { background: var(--surface-2); }
+.friend-row-item .help { display: block; }
+.friend-row-item > .i { color: var(--ink-3); }
+.friend-av { position: relative; flex: none; }
+.friend-av .dot { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink-3); border: 2.5px solid var(--surface); }
+.friend-av .dot.live { background: var(--c-confirmed); }
+.friend-av .dot.stale { background: var(--c-maybe); }
+.friend-section { border-top: 1px solid var(--line); padding: 14px 0 16px; }
+.friend-section:first-child { border-top: 0; padding-top: 2px; }
+.friend-section h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 13.5px; color: var(--ink-2); font-weight: 600; }
+.friend-section p { margin: 0 0 4px; }
+.friend-section .links { margin-top: 10px; }
+.friend-section > .btn.block { margin-top: 10px; }
+.mini-plan { display: flex; flex-direction: column; gap: 2px; }
+.mini-stop { display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 5px 2px; text-align: left; color: inherit; border-radius: 8px; }
+.mini-stop:hover { background: var(--surface-2); }
+.mini-stop .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 10px 12px; padding: 10px 12px; border-radius: var(--r-m); background: var(--accent-soft); font-size: 14px; }
+.person-banner .grow { flex: 1; min-width: 160px; }
+.friend-marker.pinpoint .bubble { animation: pinpoint 1.4s var(--ease) 3; }
+@keyframes pinpoint {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, #1A73E8 55%, transparent), 0 2px 8px rgba(0,0,0,.35); transform: scale(1); }
+  40% { transform: scale(1.18); }
+  100% { box-shadow: 0 0 0 22px transparent, 0 2px 8px rgba(0,0,0,.35); transform: scale(1); }
+}
+/* The friend card leaves room to see them on the map */
+@media (max-width: 899px) { .sheet.friend-sheet { max-height: 58dvh; } }

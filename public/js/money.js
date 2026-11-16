@@ -76,6 +76,8 @@ export function settlePlan(net) {
 const root = () => document.getElementById('screen-money');
 let tab = 'expenses';
 let filter = 'all';
+let withUser = null; // show only expenses between me and this person
+on('money-with', (id) => { withUser = +id; tab = 'expenses'; filter = 'all'; if (isShown()) render(); });
 const isShown = () => !root().hidden;
 ['expenses', 'users', 'trip', 'subgroups'].forEach((e) => on(e, () => isShown() && render()));
 
@@ -90,7 +92,9 @@ export function render() {
   const people = state.users.filter((u) => u.id !== me)
     .map((u) => ({ u, v: pair(u.id, me) })) // >0: they owe me
     .filter((x) => Math.abs(x.v) >= 1);
-  const shown = all.filter((e) => filter === 'all' ? true : filter === 'mine' ? (e.paidBy === me || e.shares.some((s) => s.userId === me)) : filter === 'private' ? e.visibility === 'private' : e.kind === 'payment')
+  if (withUser && !userById(withUser)) withUser = null;
+  const between = (e) => (e.paidBy === me && e.shares.some((s) => s.userId === withUser)) || (e.paidBy === withUser && e.shares.some((s) => s.userId === me));
+  const shown = all.filter((e) => !withUser || between(e)).filter((e) => filter === 'all' ? true : filter === 'mine' ? (e.paidBy === me || e.shares.some((s) => s.userId === me)) : filter === 'private' ? e.visibility === 'private' : e.kind === 'payment')
     .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.createdAt - a.createdAt);
   const byDate = {};
   for (const e of shown) (byDate[e.date || ''] ||= []).push(e);
@@ -103,7 +107,14 @@ export function render() {
       <button class="btn small primary" data-add>${icon('plus')}Expense</button>
     </header>
 
-    <section class="money-summary">
+    ${withUser ? (() => {
+      const w = userById(withUser), v = pair(withUser, me);
+      return `<div class="person-banner">${avatar(w)}<span class="grow">Showing expenses between you and <b>${esc(w.name)}</b>.
+        ${v > 0 ? `${esc(w.name)} owes you <b class="num pos">${fmt(v)}</b>.` : v < 0 ? `You owe ${esc(w.name)} <b class="num neg">${fmt(-v)}</b>.` : 'You’re all square.'}</span>
+        ${v ? `<button class="btn small primary" data-settle="${withUser}" data-amount="${v}">${v > 0 ? 'Record payment' : 'Settle up'}</button>` : ''}
+        <button class="btn small" data-clear-with>Show all</button></div>`;
+    })() : ''}
+    <section class="money-summary" ${withUser ? 'hidden' : ''}>
       <div class="money-big ${myNet > 0 ? 'pos' : myNet < 0 ? 'neg' : ''}">
         <span class="label">${myNet > 0 ? 'You are owed' : myNet < 0 ? 'You owe' : 'You’re all square'}</span>
         ${myNet ? `<b class="num">${fmt(Math.abs(myNet))}</b>` : ''}
@@ -131,6 +142,7 @@ export function render() {
   </div>`;
 
   el.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => openExpense());
+  el.querySelector('[data-clear-with]')?.addEventListener('click', () => { withUser = null; render(); });
   el.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { tab = b.dataset.tab; render(); });
   el.querySelectorAll('[data-filter]').forEach((b) => b.onclick = () => { filter = b.dataset.filter; render(); });
   el.querySelectorAll('[data-open]').forEach((b) => b.onclick = () => openExpense(state.expenses.get(b.dataset.open)));
@@ -194,7 +206,7 @@ function balancesHtml(net) {
 }
 
 // ---------- settle-up payment ----------
-function openPayment({ from, to, amount }) {
+export function openPayment({ from, to, amount }) {
   const c = base();
   const s = openSheet({
     title: 'Record a payment',

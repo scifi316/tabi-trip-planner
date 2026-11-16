@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Tabi developer console</title>
+  <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/maplibre-gl/maplibre-gl.css">
+  <link rel="stylesheet" href="/app.css">
+  <script>
+    (function () {
+      var t = localStorage.getItem('tabi.theme') || 'system';
+      var dark = t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    })();
+  </script>
+  <style>
+    body { overflow: auto; }
+    .dev { max-width: 1280px; margin: 0 auto; padding: calc(var(--safe-t) + 14px) 16px 60px; }
+    .dev-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+    .dev-head h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
+    .dev-head .grow { flex: 1; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; padding: 3px 10px; border-radius: 11px; background: var(--surface-2); color: var(--ink-2); }
+    .badge.good { background: color-mix(in srgb, var(--c-confirmed) 18%, transparent); color: var(--c-confirmed); }
+    .badge.warn { background: color-mix(in srgb, var(--c-maybe) 20%, transparent); color: var(--c-maybe); }
+    .badge.bad { background: color-mix(in srgb, var(--c-missed) 18%, transparent); color: var(--c-missed); }
+    .live-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .dev-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 16px; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+    .dev-tabs button { border: 0; background: none; padding: 10px 12px; font-weight: 600; font-size: 14px; color: var(--ink-2); border-bottom: 2.5px solid transparent; white-space: nowrap; }
+    .dev-tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+    .dev-tabs .n { font-size: 11.5px; color: var(--ink-3); margin-left: 4px; font-variant-numeric: tabular-nums; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .panel { background: var(--surface); border-radius: var(--r-m); padding: 14px 16px; }
+    .panel h3 { margin: 0 0 10px; font-size: 14px; color: var(--ink-2); font-weight: 600; }
+    .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 13.5px; }
+    .kv dt { color: var(--ink-3); }
+    .kv dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; min-width: 0; }
+    .panel.wide { grid-column: span 2; }
+    @media (max-width: 640px) { .panel.wide { grid-column: auto; } }
+    a { color: var(--accent); }
+    .tbl-wrap { overflow-x: auto; background: var(--surface); border-radius: var(--r-m); }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+    th { color: var(--ink-3); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+    td.wrap { white-space: normal; min-width: 200px; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr.new td { animation: flash 1.2s ease-out; }
+    @keyframes flash { from { background: var(--accent-soft); } }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+    .toolbar .input { width: auto; min-width: 200px; min-height: 36px; padding: 6px 10px; font-size: 14px; }
+    .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+    .logline { padding: 3px 10px; border-bottom: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+    .logline.warn { color: var(--c-maybe); }
+    .logline.error { color: var(--c-missed); }
+    .logline time { color: var(--ink-3); margin-right: 8px; }
+    .dev-map { height: 420px; border-radius: var(--r-m); overflow: hidden; margin-bottom: 12px; background: var(--surface-2); }
+    .pin { width: 30px; height: 30px; border-radius: 50%; border: 3px solid #fff; color: #fff; font-weight: 800; font-size: 12px; display: grid; place-items: center; box-shadow: 0 1px 6px rgba(0,0,0,.4); }
+    .hint { font-size: 13px; color: var(--ink-2); }
+    details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; }
+    pre { margin: 6px 0 0; white-space: pre-wrap; }
+    .empty-row td { color: var(--ink-3); text-align: center; padding: 18px; }
+  </style>
+</head>
+<body>
+  <div class="dev">
+    <header class="dev-head">
+      <h1>Tabi developer console</h1>
+      <span class="badge" id="role">…</span>
+      <span class="badge" id="live"><span class="live-dot"></span>Connecting</span>
+      <span class="grow"></span>
+      <a class="btn small" href="/">Open the app</a>
+    </header>
+    <nav class="dev-tabs" role="tablist" id="tabs"></nav>
+    <main id="view"></main>
+  </div>
+  <script type="module" src="/js/dev.js"></script>
+</body>
+</html>

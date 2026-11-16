@@ -6,10 +6,12 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { resolveLink, extractUrls, myMapsId, fetchMyMapsKml, photonAddress, geocode } from './links.js';
-import { createAuth } from './auth.js';
+import os from 'node:os';
+import { createAuth, parseCookies } from './auth.js';
+import { devPush, devRecent, devSubscribe, startedAt } from './devlog.js';
 import { cleanExpense, CURRENCIES } from './money.js';
 
-export function createApp({ db, blobs, root, env = process.env, getHealth = () => ({}) }) {
+export function createApp({ db, blobs, root, dataDir = '', env = process.env, getHealth = () => ({}) }) {
   const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
   const CONFIG = {
     styleLight: env.MAP_STYLE_LIGHT || 'https://tiles.openfreemap.org/styles/liberty',
@@ -19,6 +21,13 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
   };
   const UA = 'Tabi-trip-planner/1.0 (self-hosted group itinerary app)';
   const auth = createAuth({ db, env, trustProxy: TRUST_PROXY });
+  const VERSION = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+
+  // Developer console: separate secret (DEV_KEY). Read-only views of the database, live locations,
+  // OwnTracks traffic, outbound calls and server logs. It also lets the holder past the private-link gate.
+  const DEV_KEY = env.DEV_KEY || '';
+  const devToken = DEV_KEY ? crypto.createHmac('sha256', DEV_KEY).update('tabi-dev-v1').digest('base64url').slice(0, 32) : '';
+  const isDev = (req) => { const c = DEV_KEY && parseCookies(req).tabi_dev; return !!c && auth.safeEqual(c, devToken); };
 
   // ---------- helpers ----------
   const now = () => Date.now();
@@ -285,8 +294,29 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     try {
       if (p === '/healthz') return send(res, 200, { ok: true, ...getHealth() });
 
+      // Developer console entry: /dev?devkey=<DEV_KEY> once per device, then /dev
+      if (DEV_KEY && (p === '/dev' || p === '/dev/')) {
+        const k = url.searchParams.get('devkey');
+        if (k) {
+          if (rateLimited(clientIp(req))) return send(res, 429, 'Too many attempts. Wait 10 minutes.');
+          if (!auth.safeEqual(k, DEV_KEY)) { devPush('op', { user: '-', op: 'dev.login', ok: false, error: 'wrong dev key', ip: clientIp(req) }); return send(res, 404, 'Not found'); }
+          addCookie(res, auth.makeCookie(req, 'tabi_dev', devToken, 30 * 86400));
+          if (auth.gateEnabled) addCookie(res, auth.makeCookie(req, 'tabi_gate', auth.gateToken, 400 * 86400));
+          console.log(`[dev] console unlocked from ${clientIp(req)}`);
+          res.writeHead(302, { Location: '/dev', 'Cache-Control': 'no-store', ...res._extraHeaders });
+          return res.end();
+        }
+        if (!isDev(req)) return send(res, 404, 'Not found');
+        res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', ...res._extraHeaders });
+        return res.end(fs.readFileSync(path.join(root, 'public/dev.html')));
+      }
+      if (p.startsWith('/api/dev/')) {
+        if (!isDev(req)) return send(res, 404, { error: 'Not found' });
+        return devApi(req, res, url, p);
+      }
+
       // Private-link gate. Without the key the site looks like nothing is there.
-      const gate = auth.checkGate(req, url);
+      const gate = isDev(req) ? { ok: true } : auth.checkGate(req, url);
       if (!gate.ok) return send(res, 404, 'Not found');
       if (gate.setCookie) {
         addCookie(res, gate.setCookie);
@@ -327,7 +357,10 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
         const b = await readBody(req);
         const trip = getTrip();
-        if (!trip.joinCode || String(b.code || '').trim().toUpperCase() !== trip.joinCode) return send(res, 403, { error: 'That invite code is not valid. Ask for a fresh invite link.' });
+        if (!trip.joinCode || String(b.code || '').trim().toUpperCase() !== trip.joinCode) {
+          devPush('op', { user: String(b.name || '').slice(0, 30), op: 'join', ok: false, error: 'bad invite code', ip: clientIp(req) });
+          return send(res, 403, { error: 'That invite code is not valid. Ask for a fresh invite link.' });
+        }
         const name = validName(b.name);
         if (!name) return send(res, 400, { error: 'Enter a name up to 24 characters.' });
         if (String(b.password || '').length < 6) return send(res, 400, { error: 'Use a password with at least 6 characters.' });
@@ -347,7 +380,11 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (rateLimited(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait 10 minutes and try again.' });
         const b = await readBody(req);
         const u = db.prepare('SELECT * FROM users WHERE name = ?').get(String(b.name || '').trim());
-        if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) return send(res, 401, { error: 'Name or password is wrong.' });
+        if (!u || !checkPassword(String(b.password || ''), u.pass_hash)) {
+          devPush('op', { user: String(b.name || '').slice(0, 30), op: 'login', ok: false, error: u ? 'wrong password' : 'no such name', ip: clientIp(req) });
+          return send(res, 401, { error: 'Name or password is wrong.' });
+        }
+        devPush('op', { user: u.name, op: 'login', ok: true, ip: clientIp(req) });
         addCookie(res, auth.create(req, u.id).setCookie);
         return send(res, 200, { ok: true });
       }
@@ -357,9 +394,17 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         const h = String(req.headers.authorization || '');
         const [name, tok] = h.startsWith('Basic ') ? Buffer.from(h.slice(6), 'base64').toString().split(':') : [];
         const u = name && db.prepare('SELECT * FROM users WHERE name = ?').get(name);
-        if (!u || !tok || !u.owntracks_token || tok !== u.owntracks_token) return send(res, 401, { error: 'Bad OwnTracks credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        if (!u || !tok || !u.owntracks_token || tok !== u.owntracks_token) {
+          devPush('owntracks', { user: name || '(none)', result: !h ? 'no-credentials' : !u ? 'unknown-user' : 'bad-token', ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 80) });
+          return send(res, 401, { error: 'Bad OwnTracks credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        }
         const b = await readBody(req);
-        if (b._type === 'location' && u.share_location) {
+        const result = b._type !== 'location' ? `ignored-${b._type || 'unknown'}` : !u.share_location ? 'ignored-sharing-off' : 'stored';
+        devPush('owntracks', {
+          user: u.name, userId: u.id, result, type: b._type, lat: b.lat, lon: b.lon, acc: b.acc, batt: b.batt, vel: b.vel, conn: b.conn,
+          trigger: b.t, tst: b.tst ? b.tst * 1000 : null, device: String(req.headers['x-limit-d'] || b.tid || ''), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 80),
+        });
+        if (result === 'stored') {
           updateLocation(u, { lat: b.lat, lng: b.lon, acc: b.acc, heading: b.cog, speed: b.vel != null ? b.vel / 3.6 : null, batt: b.batt, ts: b.tst ? b.tst * 1000 : now() }, 'owntracks');
         }
         const locs = listLocations();
@@ -570,8 +615,9 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
     const session = auth.resolve(req, url);
     if (!session) return reject(401, 'Unauthorized');
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const client = { ws, user: session.user, sessionHash: session.hash, alive: true };
+      const client = { ws, user: session.user, sessionHash: session.hash, alive: true, since: Date.now(), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 160) };
       clients.add(client);
+      devPush('ws', { user: session.user.name, event: 'connected', ip: client.ip });
       sendTo(client, snapshot(session.user));
       broadcastPresence();
       ws.on('pong', () => { client.alive = true; });
@@ -584,15 +630,17 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
         if (!fresh) { ws.send('{"t":"kicked"}'); return ws.close(); }
         client.user = fresh;
         let result;
+        const t0 = Date.now();
         try {
           result = handleOp(fresh, msg.op, msg.data || {}, client) || { ok: true };
         } catch (e) {
           result = { ok: false, error: e.expose ? e.message : 'That change could not be saved.' };
           if (!e.expose) console.error(e);
         }
+        if (msg.op !== 'loc.update') devPush('op', { user: fresh.name, op: String(msg.op).slice(0, 40), ok: result.ok !== false, error: result.error, ms: Date.now() - t0 });
         if (msg.id) ws.send(JSON.stringify({ t: 'ack', id: msg.id, ...result }));
       });
-      ws.on('close', () => { clients.delete(client); broadcastPresence(); });
+      ws.on('close', () => { clients.delete(client); broadcastPresence(); devPush('ws', { user: client.user.name, event: 'disconnected', ip: client.ip, seconds: Math.round((Date.now() - client.since) / 1000) }); });
     });
   });
 
@@ -666,6 +714,7 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       ON CONFLICT(user_id) DO UPDATE SET lat=excluded.lat, lng=excluded.lng, acc=excluded.acc, heading=excluded.heading, speed=excluded.speed,
       batt=COALESCE(excluded.batt, locations.batt), ts=excluded.ts, source=excluded.source`).run(user.id, loc.lat, loc.lng, loc.acc, loc.heading, loc.speed, loc.batt, loc.ts, source);
     broadcast({ t: 'loc', userId: user.id, loc });
+    devPush('loc', { userId: user.id, user: user.name, source, lat: loc.lat, lng: loc.lng, acc: loc.acc, batt: loc.batt, speed: loc.speed, at: loc.ts, lagMs: Date.now() - loc.ts });
   }
 
   const STATUS_WORDS = { suggested: 'moved back to suggested', maybe: 'marked as maybe', confirmed: 'confirmed', visited: 'marked as visited', skipped: 'skipped', vetoed: 'vetoed' };
@@ -933,6 +982,63 @@ export function createApp({ db, blobs, root, env = process.env, getHealth = () =
       default:
         fail('Unknown action');
     }
+  }
+
+  // ---------- developer console API (read-only) ----------
+  function devApi(req, res, url, p) {
+    const count = (sql) => db.prepare(sql).get().n;
+    const names = Object.fromEntries(db.prepare('SELECT id, name FROM users').all().map((u) => [u.id, u.name]));
+    if (p === '/api/dev/stream') return devSubscribe(req, res);
+    if (p === '/api/dev/events') {
+      const kind = url.searchParams.get('kind') || 'log';
+      return send(res, 200, { events: devRecent(kind, { since: +url.searchParams.get('since') || 0, limit: 1000 }) });
+    }
+    if (p === '/api/dev/overview') {
+      const fileSize = (f) => { try { return fs.statSync(path.join(dataDir, f)).size; } catch { return 0; } };
+      const statusCounts = Object.fromEntries(db.prepare('SELECT status, COUNT(*) n FROM places WHERE removed_at IS NULL GROUP BY status').all().map((r) => [r.status, r.n]));
+      const mem = process.memoryUsage();
+      return send(res, 200, {
+        version: VERSION, node: process.version, host: os.hostname(), health: getHealth(),
+        uptimeSec: Math.round((Date.now() - startedAt) / 1000), memory: { rss: mem.rss, heapUsed: mem.heapUsed }, load: os.loadavg(),
+        systemMemory: { total: os.totalmem(), free: os.freemem() },
+        db: { bytes: fileSize('tabi.db') + fileSize('tabi.db-wal') },
+        counts: {
+          users: count('SELECT COUNT(*) n FROM users'), sessions: count('SELECT COUNT(*) n FROM sessions'),
+          places: count('SELECT COUNT(*) n FROM places WHERE removed_at IS NULL'), removed: count('SELECT COUNT(*) n FROM places WHERE removed_at IS NOT NULL'),
+          byStatus: statusCounts, votes: count('SELECT COUNT(*) n FROM votes'), subgroups: count('SELECT COUNT(*) n FROM subgroups'),
+          expenses: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'expense'"),
+          privateExpenses: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND visibility = 'private'"),
+          payments: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'payment'"),
+          attachments: count('SELECT COUNT(*) n FROM attachments'), attachmentBytes: db.prepare('SELECT COALESCE(SUM(bytes),0) n FROM attachments').get().n,
+          geocache: count('SELECT COUNT(*) n FROM geocache'), activity: count('SELECT COUNT(*) n FROM activity'),
+        },
+        clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua })),
+        trip: { ...tripForClient(null), joinCode: undefined },
+        config: CONFIG,
+        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180) },
+      });
+    }
+    if (p === '/api/dev/people') {
+      const lastOt = {};
+      for (const e of devRecent('owntracks', { limit: 300 })) if (e.userId) lastOt[e.userId] = e;
+      const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
+      return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
+        id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
+        owntracksConfigured: !!u.owntracks_token, lastOwnTracks: lastOt[u.id] ? { ts: lastOt[u.id].ts, result: lastOt[u.id].result } : null,
+        location: locs[u.id] ? { lat: locs[u.id].lat, lng: locs[u.id].lng, acc: locs[u.id].acc, batt: locs[u.id].batt, ts: locs[u.id].ts, source: locs[u.id].source } : null,
+        sessions: db.prepare('SELECT COUNT(*) n, MAX(last_seen) last FROM sessions WHERE user_id = ?').get(u.id),
+        online: [...clients].some((c) => c.user.id === u.id),
+        groups: listSubgroups().filter((g) => g.memberIds.includes(u.id)).map((g) => g.name),
+      })) });
+    }
+    if (p === '/api/dev/places') {
+      return send(res, 200, { places: db.prepare('SELECT * FROM places ORDER BY day, sort').all().map((r) => {
+        const pl = placeRow(r);
+        return { ...pl, createdByName: names[pl.createdBy] || null, removedByName: names[pl.removedBy] || null,
+          votesByName: Object.fromEntries(Object.entries(pl.votes).map(([k, v]) => [names[k] || k, v])) };
+      }), subgroups: listSubgroups() });
+    }
+    return send(res, 404, { error: 'Not found' });
   }
 
   return {

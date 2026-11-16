@@ -14,6 +14,9 @@ import { createApp } from './app.js';
 import { createBlobStore } from './blobs.js';
 import { s3FromEnv } from './s3.js';
 import { createHA, startBackups } from './ha.js';
+import { installDevCapture } from './devlog.js';
+
+installDevCapture(); // keeps recent logs and outbound calls in memory for the developer console
 
 const env = process.env;
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -90,7 +93,7 @@ async function main() {
 
   db = openDb(DATA_DIR);
   const blobs = createBlobStore(DATA_DIR, s3);
-  app = createApp({ db, blobs, root: ROOT, env, getHealth: () => (ha ? ha.status() : { role: 'single', node: NODE }) });
+  app = createApp({ db, blobs, root: ROOT, dataDir: DATA_DIR, env, getHealth: () => (ha ? ha.status() : { role: 'single', node: NODE }) });
   await new Promise((r) => app.server.listen(PORT, r));
   log(`Tabi is running on http://localhost:${PORT} (data: ${DATA_DIR}${HA_ON ? `, ${NODE} is leader` : ''})`);
   if (app.userCount() === 0) log('No trip yet: open the app in a browser to create it.');
