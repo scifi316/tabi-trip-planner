@@ -10,6 +10,8 @@ import os from 'node:os';
 import { createAuth, parseCookies } from './auth.js';
 import { devPush, devRecent, devSubscribe, startedAt } from './devlog.js';
 import { cleanExpense, CURRENCIES } from './money.js';
+import { createNotifier, prefsOf, cleanPrefs, NOTIFY_KINDS } from './notify.js';
+import { imageSize } from './images.js';
 
 export function createApp({ db, blobs, root, dataDir = '', env = process.env, getHealth = () => ({}) }) {
   const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
@@ -57,7 +59,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const VOTES = new Set(['up', 'down', 'veto']);
   const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#9CAEB7'];
 
-  const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location });
+  const publicUser = (u) => ({ id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
   const userCount = () => db.prepare('SELECT COUNT(*) n FROM users').get().n;
   const userIdSet = () => new Set(db.prepare('SELECT id FROM users').all().map((u) => u.id));
@@ -121,7 +123,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const admin = !!me.is_admin;
     return {
       t: 'state',
-      me: { ...publicUser(me), owntracksToken: me.owntracks_token },
+      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me) },
       trip: tripForClient(user),
       users: listUsers(),
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
@@ -130,7 +132,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       locations: listLocations(),
       online: onlineIds(),
       activity: recentActivity(),
-      config: { ...CONFIG, gate: auth.gateEnabled ? auth.gateToken : null },
+      notifications: notifier.list(me.id),
+      unread: notifier.unread(me.id),
+      config: { ...CONFIG, version: VERSION, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -280,6 +284,26 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     return `<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${esc(getTrip().name)}</name>${folders}</Document></kml>`;
   }
 
+  // Frankfurter moved to api.frankfurter.dev; the old host still answers, so it's the fallback.
+  async function fxFetch(pathAndQuery) {
+    let last;
+    for (const host of ['https://api.frankfurter.dev/v1', 'https://api.frankfurter.app']) {
+      try {
+        const r = await fetch(host + pathAndQuery, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
+        if (!r.ok) throw new Error(`rates service returned ${r.status}`);
+        return await r.json();
+      } catch (e) { last = e; }
+    }
+    throw last;
+  }
+
+  const AVATAR_MAX_BYTES = 512 * 1024;
+  // Old profile photos are deleted so they don't take up storage.
+  function dropBlobIfUnused(key) {
+    if (db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(key) || db.prepare('SELECT 1 FROM attachments WHERE blob_key = ?').get(key)) return;
+    blobs.del?.(key).catch(() => {});
+  }
+
   function canSeeAttachment(user, a) {
     if (a.created_by === user.id) return true;
     if (!a.expense_id) return false;
@@ -372,6 +396,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const id = Number(r.lastInsertRowid);
         broadcast({ t: 'users', users: listUsers() });
         logActivity(id, `${name} joined the trip`);
+        notifier.notify(listUsers().map((x) => ({ userId: x.id, kinds: ['people'], text: `${name} joined the trip` })), { actorId: id, ref: { type: 'user', id } });
         addCookie(res, auth.create(req, id).setCookie);
         return send(res, 200, { ok: true });
       }
@@ -508,14 +533,61 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const hit = cache.get(key, 6 * 3600e3);
         if (hit) return send(res, 200, hit);
         try {
-          const r = await fetch(`https://api.frankfurter.app/latest?from=${from}&to=${to}`, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) });
-          const j = await r.json();
+          const j = await fxFetch(`/latest?base=${from}&symbols=${to}`);
           const rate = j.rates?.[to];
           if (!rate) throw new Error('no rate');
           const out = { rate, date: j.date };
           cache.set(key, out);
           return send(res, 200, out);
         } catch { return send(res, 502, { error: 'Could not look up the exchange rate. Type it in instead.' }); }
+      }
+
+      // All rates against EUR (ECB via Frankfurter), for the converter. Cached for 6 hours.
+      if (p === '/api/rates' && req.method === 'GET') {
+        const hit = cache.get('fx:table', 6 * 3600e3);
+        if (hit) return send(res, 200, hit);
+        try {
+          const j = await fxFetch('/latest');
+          const rates = { EUR: 1 };
+          for (const [k, v] of Object.entries(j.rates || {})) if (k in CURRENCIES) rates[k] = v;
+          const out = { base: 'EUR', date: j.date, rates, fetchedAt: now() };
+          cache.set('fx:table', out);
+          return send(res, 200, out);
+        } catch {
+          const old = cache.get('fx:table', 365 * 864e5);
+          if (old) return send(res, 200, { ...old, stale: true });
+          return send(res, 502, { error: 'Could not look up exchange rates right now.' });
+        }
+      }
+
+      // Profile photos: square, at most 640×640, already cropped and resized in the browser.
+      if (p === '/api/avatar' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const old = user.avatar;
+        let key = null;
+        if (req.method === 'POST') {
+          const mime = String(req.headers['content-type'] || '').split(';')[0];
+          const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[mime];
+          if (!ext) return send(res, 415, { error: 'Use a JPEG, PNG or WebP image.' });
+          const buf = await readRaw(req, AVATAR_MAX_BYTES);
+          const size = imageSize(buf);
+          if (!size || size.type !== ext) return send(res, 400, { error: 'That image could not be read.' });
+          if (size.width !== size.height) return send(res, 400, { error: 'Profile photos have to be square.' });
+          if (size.width > 640 || size.width < 64) return send(res, 400, { error: 'Profile photos must be between 64 and 640 pixels wide.' });
+          key = await blobs.put(buf, ext);
+        }
+        db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(key, user.id);
+        broadcast({ t: 'users', users: listUsers() });
+        if (old && old !== key) dropBlobIfUnused(old);
+        return send(res, 200, { ok: true, avatar: key ? `/api/avatars/${key}` : null });
+      }
+      const av = p.match(/^\/api\/avatars\/([a-f0-9]{64}\.(?:jpg|png|webp))$/);
+      if (av && req.method === 'GET') {
+        if (!db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(av[1])) return send(res, 404, { error: 'Not found' });
+        const buf = await blobs.get(av[1]);
+        if (!buf) return send(res, 404, { error: 'Not found' });
+        const type = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp' }[av[1].split('.').pop()];
+        res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(buf);
       }
 
       // Receipt photos and screenshots
@@ -578,6 +650,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   const clients = new Set();
   const onlineIds = () => [...new Set([...clients].map((c) => c.user.id))];
+
+  const notifier = createNotifier({ db, deliver: (userId, item, unread) => { for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif', item, unread }); } });
+  const notifyUnread = (userId) => { const n = notifier.unread(userId); for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif.unread', unread: n }); };
 
   function sendTo(c, msg) { if (c.ws.readyState === 1) c.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
   function broadcast(msg) { const data = JSON.stringify(msg); for (const c of clients) sendTo(c, data); }
@@ -652,7 +727,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     }
   }, 30000);
   heartbeat.unref();
-  const purge = setInterval(() => auth.purgeExpired(), 6 * 3600e3);
+  const purge = setInterval(() => { auth.purgeExpired(); notifier.purgeOld(); }, 6 * 3600e3);
   purge.unref();
 
   // ---------- operations ----------
@@ -717,6 +792,108 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     devPush('loc', { userId: user.id, user: user.name, source, lat: loc.lat, lng: loc.lng, acc: loc.acc, batt: loc.batt, speed: loc.speed, at: loc.ts, lagMs: Date.now() - loc.ts });
   }
 
+  // ---------- notification wording ----------
+  const nameOf = (id) => db.prepare('SELECT name FROM users WHERE id = ?').get(id)?.name || 'Someone';
+  const allUserIds = () => db.prepare('SELECT id FROM users').all().map((u) => u.id);
+  const membersOf = (gid) => db.prepare('SELECT user_id FROM subgroup_members WHERE subgroup_id = ?').all(gid).map((m) => m.user_id);
+  const fmtMoney = (minor, cur) => {
+    const d = CURRENCIES[cur] ?? 2;
+    return new Intl.NumberFormat('en', { style: 'currency', currency: cur, minimumFractionDigits: d, maximumFractionDigits: d }).format(minor / 10 ** d);
+  };
+  const fmtDay = (d) => new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(d + 'T00:00:00Z'));
+  const fmtRange = (a, b) => (!a ? '' : !b || a === b ? fmtDay(a) : `${fmtDay(a)} to ${fmtDay(b)}`);
+  const tripToday = () => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: getTrip().timezone || 'Asia/Tokyo' }).format(new Date()); } catch { return new Date().toISOString().slice(0, 10); } };
+
+  // A place changed from `b` to `a` (raw rows; b null for a new place). Tells the person who added it,
+  // admins when it's removed, and anyone whose plan (a confirmed stop from today on) it touches.
+  function placeNews(actor, b, a) {
+    if (!a) return;
+    const t = tripToday();
+    const inPlan = (r) => !!r && !r.removed_at && r.status === 'confirmed' && !!r.day && r.day >= t;
+    const sees = (r, uid) => !r.group_id || membersOf(r.group_id).includes(uid);
+    const who = actor?.name;
+    const n = a.name;
+    let mine = null, removed = null, plan = null;
+    if (b && !b.removed_at && a.removed_at) {
+      mine = `${who} removed ${n}, which you added`;
+      removed = `${who} removed ${n}. It’s in Previously interested.`;
+    } else if (b?.removed_at && !a.removed_at) mine = `${who} brought back ${n}`;
+    else if (b && a.status !== b.status && (a.status === 'confirmed' || a.status === 'vetoed')) {
+      mine = who ? `${who} ${a.status} ${n}, which you added` : `${n}, which you added, was ${a.status} by votes`;
+    }
+    const wasP = inPlan(b), isP = inPlan(a);
+    const at = (r) => `${fmtDay(r.day)}${r.time ? ` at ${r.time}` : ''}`;
+    if (!wasP && isP) plan = who ? `${who} added ${n} to the plan for ${at(a)}` : `${n} is on the plan for ${at(a)}, confirmed by votes`;
+    else if (wasP && !isP) {
+      if (a.removed_at) plan = `${who} removed ${n} from the plan for ${fmtDay(b.day)}`;
+      else if (a.status === 'vetoed') plan = `${who || 'Votes'} vetoed ${n}. It’s off the plan for ${fmtDay(b.day)}.`;
+      else if (a.status === 'visited' || a.status === 'skipped') plan = null;
+      else if (!a.day) plan = `${who} unscheduled ${n}`;
+      else plan = `${who} took ${n} off the plan for ${fmtDay(b.day)}`;
+    } else if (wasP && isP) {
+      if (a.day !== b.day) plan = `${who} moved ${n} to ${at(a)}`;
+      else if (a.time !== b.time) plan = a.time ? `${who} set ${n} for ${at(a)}` : `${who} cleared the time for ${n} on ${fmtDay(a.day)}`;
+    }
+    if (!mine && !removed && !plan) return;
+    const admins = new Set(db.prepare('SELECT id FROM users WHERE is_admin = 1').all().map((u) => u.id));
+    const out = [];
+    for (const uid of allUserIds()) {
+      const kinds = [], text = {};
+      if (mine && a.created_by === uid) { kinds.push('myPlaces'); text.myPlaces = mine; }
+      if (removed && admins.has(uid)) { kinds.push('removed'); text.removed = removed; }
+      if (plan && ((b && wasP && sees(b, uid)) || (isP && sees(a, uid)))) { kinds.push('plan'); text.plan = plan; }
+      if (kinds.length) out.push({ userId: uid, kinds, text });
+    }
+    notifier.notify(out, { actorId: actor?.id ?? null, ref: { type: 'place', id: a.id } });
+  }
+
+  // How an expense leaves someone: >0 they're owed (they paid), <0 they owe.
+  const position = (e, uid) => {
+    if (!e) return 0;
+    const share = e.shares.find((x) => x.userId === uid)?.amount || 0;
+    return e.paidBy === uid ? e.amount - share : -share;
+  };
+  const involved = (e) => (e ? [e.paidBy, ...e.shares.map((x) => x.userId)] : []);
+
+  function moneyNews(actor, b, a, { deleted = false } = {}) {
+    const e = a || b;
+    if (!e) return;
+    const who = actor.name;
+    const out = [];
+    const people = [...new Set([...involved(b), ...involved(a)])];
+    if (e.kind === 'payment') {
+      const from = e.paidBy, to = e.shares[0]?.userId, amt = fmtMoney(e.amount, e.currency);
+      for (const uid of people) {
+        let text;
+        if (deleted) text = `${who} deleted the ${amt} payment between you and ${nameOf(uid === from ? to : from)}`;
+        else if (b) { if (b.amount === a.amount && b.paidBy === a.paidBy) continue; text = `${who} changed a payment between you and ${nameOf(uid === from ? to : from)} to ${amt}`; }
+        else if (uid === to) text = actor.id === from ? `${who} paid you ${amt}` : `${who} recorded that ${nameOf(from)} paid you ${amt}`;
+        else text = actor.id === to ? `${who} recorded your payment of ${amt}` : `${who} recorded that you paid ${nameOf(to)} ${amt}`;
+        out.push({ userId: uid, kinds: ['payments'], text });
+      }
+    } else {
+      const payerName = (x) => (x.paidBy === actor.id ? 'them' : nameOf(x.paidBy));
+      for (const uid of people) {
+        const pos = deleted ? 0 : position(a, uid), was = position(b, uid);
+        let text;
+        if (deleted) text = `${who} deleted ${e.title}`;
+        else if (!b) {
+          if (uid === a.paidBy) text = `${who} added ${a.title}, which you paid for${pos > 0 ? `. You’re owed ${fmtMoney(pos, a.currency)}.` : ''}`;
+          else if (!pos) continue;
+          else text = `${who} added ${a.title}. You owe ${payerName(a)} ${fmtMoney(-pos, a.currency)}.`;
+        } else {
+          if (pos === was && a.paidBy === b.paidBy && a.currency === b.currency) continue;
+          if (!involved(a).includes(uid)) text = `${who} took you out of ${a.title}`;
+          else if (pos > 0) text = `${who} changed ${a.title}. You’re now owed ${fmtMoney(pos, a.currency)}.`;
+          else if (pos < 0) text = `${who} changed ${a.title}. You now owe ${payerName(a)} ${fmtMoney(-pos, a.currency)}.`;
+          else text = `${who} changed ${a.title}. You don’t owe anything for it now.`;
+        }
+        out.push({ userId: uid, kinds: ['expenses'], text });
+      }
+    }
+    notifier.notify(out, { actorId: actor.id, ref: { type: 'expense', id: e.id } });
+  }
+
   const STATUS_WORDS = { suggested: 'moved back to suggested', maybe: 'marked as maybe', confirmed: 'confirmed', visited: 'marked as visited', skipped: 'skipped', vetoed: 'vetoed' };
   const tx = (fn) => { db.exec('BEGIN'); try { const r = fn(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } };
 
@@ -726,7 +903,13 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       // ---- places ----
       case 'place.add': {
         const place = insertPlace(user, d.place || {});
-        if (place) { broadcastPlace(place.id); logActivity(user.id, `${user.name} added ${place.name}`); }
+        if (place) {
+          broadcastPlace(place.id);
+          logActivity(user.id, `${user.name} added ${place.name}`);
+          notifier.notify(allUserIds().map((uid) => ({ userId: uid, kinds: ['newPlaces'], merge: 'count', text: (k) => (k > 1 ? `${user.name} added ${k} places` : `${user.name} added ${place.name}`) })),
+            { actorId: user.id, ref: { type: 'adds', id: null } });
+          placeNews(user, null, db.prepare('SELECT * FROM places WHERE id = ?').get(place.id));
+        }
         return { ok: true };
       }
       case 'place.bulk': {
@@ -734,7 +917,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const added = tx(() => list.map((item) => { try { return insertPlace(user, item); } catch { return null; } }).filter(Boolean));
         if (added.length) {
           broadcastPlaces(added);
-          logActivity(user.id, `${user.name} imported ${added.length} place${added.length === 1 ? '' : 's'}${d.source ? ` from ${String(d.source).slice(0, 80)}` : ''}`);
+          const what = `${user.name} imported ${added.length} place${added.length === 1 ? '' : 's'}${d.source ? ` from ${String(d.source).slice(0, 80)}` : ''}`;
+          logActivity(user.id, what);
+          notifier.notify(allUserIds().map((uid) => ({ userId: uid, kinds: ['newPlaces'], text: what })), { actorId: user.id, ref: { type: 'import', id: null } });
         }
         return { ok: true, added: added.length };
       }
@@ -752,6 +937,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           logActivity(user.id, patch.day ? `${user.name} moved ${p.name} to ${patch.day}` : `${user.name} unscheduled ${p.name}`);
         }
         broadcastPlace(d.id);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.reorder': {
@@ -767,6 +953,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         db.prepare('UPDATE places SET removed_at = ?, removed_by = ?, updated_at = ? WHERE id = ?').run(now(), user.id, now(), d.id);
         broadcastPlace(d.id);
         logActivity(user.id, `${user.name} removed ${row.name}`);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.restore': {
@@ -776,6 +963,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         db.prepare('UPDATE places SET removed_at = NULL, removed_by = NULL, status = CASE WHEN status = \'vetoed\' THEN \'suggested\' ELSE status END, updated_at = ? WHERE id = ?').run(now(), d.id);
         broadcastPlace(d.id);
         logActivity(user.id, `${user.name} brought back ${row.name}`);
+        placeNews(user, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
       case 'place.purge': {
@@ -799,6 +987,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (d.value === 'veto') logActivity(user.id, `${user.name} vetoed ${row.name}`);
         if (changed === 'confirmed') logActivity(null, `${row.name} was confirmed by votes`);
         broadcastPlace(d.id);
+        if (changed) placeNews(changed === 'vetoed' ? user : null, row, db.prepare('SELECT * FROM places WHERE id = ?').get(d.id));
         return { ok: true };
       }
 
@@ -815,6 +1004,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const ids = userIdSet();
         const members = [...new Set((g.memberIds || []).map(Number))].filter((id) => ids.has(id));
         const existed = db.prepare('SELECT * FROM subgroups WHERE id = ?').get(g.id);
+        const before = existed ? membersOf(g.id) : [];
         tx(() => {
           if (existed) db.prepare('UPDATE subgroups SET name = ?, color = ?, start_day = ?, end_day = ? WHERE id = ?').run(name, color, start, end, g.id);
           else db.prepare('INSERT INTO subgroups(id, name, color, start_day, end_day, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(g.id, name, color, start, end, user.id, now());
@@ -824,6 +1014,12 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         });
         broadcastGroups();
         logActivity(user.id, existed ? `${user.name} updated the subgroup ${name}` : `${user.name} made a subgroup: ${name}`);
+        const range = fmtRange(start, end);
+        const changed = existed && (existed.name !== name || existed.start_day !== start || existed.end_day !== end);
+        notifier.notify(members.filter((m) => !before.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} added you to ${name}${range ? ` for ${range}` : ''}` }))
+          .concat(before.filter((m) => !members.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} took you out of ${name}` })))
+          .concat(changed ? members.filter((m) => before.includes(m)).map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} changed ${name}${range ? `: now ${range}` : ''}` })) : []),
+        { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
       case 'group.member': {
@@ -835,12 +1031,16 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         else db.prepare('DELETE FROM subgroup_members WHERE subgroup_id = ? AND user_id = ?').run(g.id, target.id);
         broadcastGroups();
         logActivity(user.id, d.on ? `${user.name} added ${target.name} to ${g.name}` : `${user.name} took ${target.name} out of ${g.name}`);
+        const range = fmtRange(g.start_day, g.end_day);
+        notifier.notify([{ userId: target.id, kinds: ['groups'], text: d.on ? `${user.name} added you to ${g.name}${range ? ` for ${range}` : ''}` : `${user.name} took you out of ${g.name}` }],
+          { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
       case 'group.delete': {
         const g = db.prepare('SELECT * FROM subgroups WHERE id = ?').get(d.id);
         if (!g) return { ok: true };
         const affected = db.prepare('SELECT id FROM places WHERE group_id = ?').all(g.id).map((r) => r.id);
+        const wereIn = membersOf(g.id);
         tx(() => {
           db.prepare('UPDATE places SET group_id = NULL WHERE group_id = ?').run(g.id);
           db.prepare('UPDATE expenses SET group_id = NULL WHERE group_id = ?').run(g.id);
@@ -849,6 +1049,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         broadcastGroups();
         if (affected.length) broadcastPlaces(affected.map(getPlace).filter(Boolean));
         logActivity(user.id, `${user.name} ended the subgroup ${g.name}`);
+        notifier.notify(wereIn.map((uid) => ({ userId: uid, kinds: ['groups'], text: `${user.name} ended the subgroup ${g.name}` })), { actorId: user.id, ref: { type: 'group', id: g.id } });
         return { ok: true };
       }
 
@@ -882,6 +1083,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           e.attachmentIds.forEach((aid) => { const a = db.prepare('SELECT * FROM attachments WHERE id = ?').get(aid); if (a && (a.created_by === user.id || prevIds.has(aid))) link.run(e.id, aid, user.id, e.id); });
         });
         broadcastExpense(e.id);
+        moneyNews(user, existing, getExpense(e.id));
         if (e.visibility === 'group' && !existing) {
           const payer = db.prepare('SELECT name FROM users WHERE id = ?').get(e.paidBy)?.name;
           logActivity(user.id, e.kind === 'payment' ? `${payer} paid back ${db.prepare('SELECT name FROM users WHERE id = ?').get(e.shares[0].userId)?.name}` : `${user.name} added ${e.title}`);
@@ -895,6 +1097,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         db.prepare('UPDATE expenses SET deleted_at = ?, updated_by = ? WHERE id = ?').run(now(), user.id, d.id);
         broadcast({ t: 'expense.del', id: d.id });
         if (e.visibility === 'group') logActivity(user.id, `${user.name} deleted ${e.title}`);
+        moneyNews(user, e, null, { deleted: true });
         return { ok: true };
       }
 
@@ -936,6 +1139,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (!target) return { ok: true };
         auth.revokeUser(target.id);
         db.prepare('DELETE FROM users WHERE id = ?').run(target.id);
+        if (target.avatar) dropBlobIfUnused(target.avatar);
         for (const c of clients) if (c.user.id === target.id) { sendTo(c, { t: 'kicked' }); c.ws.close(); }
         broadcast({ t: 'users', users: listUsers() });
         broadcast({ t: 'loc', userId: target.id, loc: null });
@@ -949,7 +1153,25 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         db.prepare('UPDATE users SET is_admin = ? WHERE id = ?').run(d.on ? 1 : 0, +d.id);
         broadcast({ t: 'users', users: listUsers() });
         refreshClientsOf(+d.id); // they gain or lose "Previously interested"
+        notifier.notify([{ userId: +d.id, kinds: ['people'], text: d.on ? `${user.name} made you a trip admin` : `${user.name} removed your trip admin role` }], { actorId: user.id, ref: { type: 'user', id: +d.id } });
         return { ok: true };
+      }
+
+      // ---- notifications ----
+      case 'notif.read': {
+        const n = notifier.markRead(user.id, Array.isArray(d.ids) ? d.ids : undefined);
+        notifyUnread(user.id);
+        return { ok: true, unread: n };
+      }
+      case 'notif.clear': {
+        notifier.clear(user.id);
+        return { ok: true, notifications: notifier.list(user.id), unread: notifier.unread(user.id) };
+      }
+      case 'notif.prefs': {
+        const prefs = cleanPrefs(d.prefs, prefsOf(user));
+        db.prepare('UPDATE users SET notify_prefs = ? WHERE id = ?').run(JSON.stringify(prefs), user.id);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'notif.prefs', prefs });
+        return { ok: true, prefs };
       }
 
       // ---- trip ----
@@ -1011,6 +1233,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           payments: count("SELECT COUNT(*) n FROM expenses WHERE deleted_at IS NULL AND kind = 'payment'"),
           attachments: count('SELECT COUNT(*) n FROM attachments'), attachmentBytes: db.prepare('SELECT COALESCE(SUM(bytes),0) n FROM attachments').get().n,
           geocache: count('SELECT COUNT(*) n FROM geocache'), activity: count('SELECT COUNT(*) n FROM activity'),
+          notifications: count('SELECT COUNT(*) n FROM notifications'), unreadNotifications: count('SELECT COUNT(*) n FROM notifications WHERE read_at IS NULL'),
+          profilePhotos: count('SELECT COUNT(*) n FROM users WHERE avatar IS NOT NULL'),
         },
         clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua })),
         trip: { ...tripForClient(null), joinCode: undefined },

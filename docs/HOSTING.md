@@ -188,7 +188,9 @@ It does three things:
 
 The serving machine uploads a final snapshot and keeps its lease while it restarts, so updates don't trigger a failover.
 
-**Your data and sign-ins survive updates.** The database lives in `data/` on the server, outside the container. New versions only add tables or columns. Sessions are stored in the database, so nobody has to sign up or sign in again.
+**Your data and sign-ins survive updates.** The database lives in `data/` on the server, outside the container. New versions only add tables or columns. Sessions are stored in the database, so nobody has to sign up or sign in again. Profile photos are stored like receipts: on the server's disk and in R2 under `blobs/`, so the home backup has them too.
+
+Rolling back one version also works: an older version ignores the tables and columns it doesn't know about (in 1.3: notifications, profile photos, notification settings).
 
 To roll back to a backup:
 

@@ -647,3 +647,111 @@ label.btn { cursor: pointer; }
 }
 /* The friend card leaves room to see them on the map */
 @media (max-width: 899px) { .sheet.friend-sheet { max-height: 58dvh; } }
+
+/* ---------- notifications ---------- */
+/* A red "!" on your picture: something new to read */
+.me-badge {
+  position: absolute; top: -3px; right: -3px; z-index: 1; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center; background: var(--c-missed); color: #fff; font-size: 12.5px; font-weight: 800; line-height: 1;
+  border: 2px solid var(--surface); animation: badge-in .35s var(--ease);
+}
+.page-head .me-badge { border-color: var(--bg); }
+@keyframes badge-in { from { transform: scale(0); } }
+@media (prefers-reduced-motion: reduce) { .me-badge { animation: none; } }
+.notif-head { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
+.notif-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
+.notif-head .grow { flex: 1; }
+.tag.new { background: var(--c-missed); color: #fff; }
+.btn.ghost { background: none; border-color: transparent; color: var(--accent); padding: 0 6px; }
+.btn.ghost:hover { background: var(--surface-2); }
+.notif-list { display: flex; flex-direction: column; margin: 0 -8px; max-height: 46dvh; overflow-y: auto; }
+.notif {
+  display: flex; align-items: flex-start; gap: 12px; width: 100%; padding: 9px 8px; border: 0; border-radius: 12px;
+  background: none; color: inherit; text-align: left; position: relative;
+}
+.notif:hover { background: var(--surface-2); }
+.notif.unread { background: var(--accent-soft); }
+.notif.unread::before { content: ""; position: absolute; left: -2px; top: 20px; width: 6px; height: 6px; border-radius: 50%; background: var(--c-missed); }
+.notif-av { position: relative; flex: none; }
+.notif-kind {
+  position: absolute; right: -5px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface); color: var(--ink-2); box-shadow: 0 0 0 1.5px var(--line);
+}
+.notif-kind .i { width: 12px; height: 12px; stroke-width: 2.2; }
+.notif-sys { background: var(--surface-3) !important; color: var(--ink-2) !important; }
+.notif-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-top: 1px; }
+.notif-text { font-size: 14.5px; line-height: 1.38; }
+.notif time { font-size: 12px; color: var(--ink-3); }
+.notif-empty { display: flex; gap: 12px; align-items: flex-start; padding: 10px 2px 4px; color: var(--ink-2); }
+.notif-empty > .i { color: var(--ink-3); margin-top: 2px; }
+.notif-empty b { color: var(--ink); }
+.notif-empty .help { font-size: 13px; margin-top: 2px; }
+
+/* ---------- profile photos ---------- */
+.avatar { position: relative; overflow: hidden; }
+.avatar img, .friend-marker .bubble img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+.friend-marker .bubble { position: relative; overflow: hidden; }
+.avatar.huge { width: 112px; height: 112px; font-size: 40px; }
+.photo-btn { position: relative; border: 0; padding: 0; background: none; border-radius: 50%; flex: none; }
+.photo-cam {
+  position: absolute; right: -3px; bottom: -3px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink); border: 2px solid var(--surface);
+}
+.photo-cam .i { width: 13px; height: 13px; stroke-width: 2.2; }
+.photo-pick { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 6px 0 4px; text-align: center; }
+.photo-current { margin-bottom: 8px; }
+.photo-pick .btn { min-width: 220px; }
+.photo-pick .hint { margin: 4px 0 0; }
+.crop-stage {
+  position: relative; width: min(100%, 320px); aspect-ratio: 1; margin: 0 auto; border-radius: 18px; overflow: hidden;
+  background: #111; touch-action: none; cursor: grab; user-select: none;
+}
+.crop-stage:active { cursor: grabbing; }
+.crop-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+/* The circle is what friends see; the corners are dimmed but still saved */
+.crop-ring { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0, 0, 0, .45); outline: 2px solid rgba(255, 255, 255, .9); outline-offset: -2px; pointer-events: none; }
+.crop-tools { display: flex; align-items: center; gap: 6px; width: min(100%, 320px); margin: 12px auto 0; }
+.crop-tools input[type=range] { flex: 1; accent-color: var(--accent); }
+.crop-tools .icon-btn span { font-size: 22px; line-height: 1; }
+.crop-preview { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; }
+.crop-preview canvas { border-radius: 50%; box-shadow: 0 0 0 1px var(--line); }
+.crop-preview canvas[data-prev="64"] { width: 64px; height: 64px; }
+.crop-preview canvas[data-prev="40"] { width: 40px; height: 40px; }
+.crop-preview canvas[data-prev="28"] { width: 28px; height: 28px; }
+.crop-preview .help { font-size: 12.5px; color: var(--ink-3); }
+.photo-sheet .seg .num { font-weight: 500; font-size: 12px; }
+
+/* ---------- currency converter ---------- */
+.fx { padding-bottom: 6px; }
+.fx-card { position: relative; margin: 0 10px; background: var(--surface); border-radius: var(--r-l); }
+.fx-line { display: flex; align-items: center; gap: 10px; padding: 14px 14px 14px 10px; min-height: 76px; }
+.fx-line.to { border-top: 1px solid var(--line); background: var(--surface-2); border-radius: 0 0 var(--r-l) var(--r-l); }
+.fx-cur {
+  flex: none; height: 44px; padding: 0 28px 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface);
+  font-weight: 700; font-size: 16px; -webkit-appearance: none; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%), linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 19px, calc(100% - 10px) 19px; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.fx-amt, .fx-out {
+  flex: 1; min-width: 0; text-align: right; font-size: clamp(26px, 8vw, 34px); font-weight: 700; letter-spacing: -.02em;
+  border: 0; background: none; padding: 0; outline: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fx-amt { -webkit-appearance: none; appearance: none; border-radius: 0; }
+.fx-card:focus-within { box-shadow: 0 0 0 2px var(--accent); }
+.fx-out { color: var(--accent); }
+.fx-swap {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 40px; height: 40px; border-radius: 50%;
+  display: grid; place-items: center; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); box-shadow: var(--shadow);
+}
+.fx-swap .i { transform: rotate(90deg); }
+.fx-swap:active { transform: translate(-50%, -50%) rotate(180deg); transition: transform .25s var(--ease); }
+.fx-meta { margin: 12px 18px 2px; font-size: 14px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.dot-sep { width: 4px; height: 4px; border-radius: 50%; background: var(--ink-3); }
+.fx-source { margin: 0 18px 12px; font-size: 13px; color: var(--ink-2); }
+.fx-quick { padding-top: 2px; }
+.fx-own { margin-bottom: 18px; }
+.fx-table { margin: 0 10px; background: var(--surface); border-radius: var(--r-m); overflow: hidden; }
+.fx-tr { display: flex; justify-content: space-between; padding: 10px 16px; font-size: 15px; }
+.fx-tr + .fx-tr { border-top: 1px solid var(--line); }
+.fx-tr span:last-child { color: var(--ink-2); font-weight: 600; }
+.seg button .i.small { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; }

@@ -5,7 +5,7 @@ const KEY = 'tabi.tour.v1.';
 const TOURS = {
   map: [
     { title: 'Welcome to Tabi', text: 'A quick look around takes about 30 seconds. You can skip it and replay the tips any time from Settings.', welcome: true },
-    { sel: '#screen-map [data-me-btn]', title: 'This is you', text: 'Your avatar shows you’re signed in. The dot is green when you’re connected and amber when you’re offline. Changes you make offline sync when you’re back.' },
+    { sel: '#screen-map [data-me-btn]', title: 'This is you', text: 'Tap your picture for notifications and to add a profile photo. A red ! means something new. The dot is green when you’re connected and amber when you’re offline.' },
     { sel: '#screen-map .search', title: 'Search or paste a link', text: 'Search anywhere in Japan, or paste a Google Maps, Apple Maps or My Maps link right here. Press and hold the map to drop a pin.' },
     { sel: '#friend-row', title: 'Friends and subgroups', text: 'Tap Friends to find someone on the map, see their plan for the day, or settle up with them. Tap “Split up” when the group heads off in different directions.' },
     { sel: '#line-strip', title: 'The day’s line', text: 'Each circle is a confirmed stop, in order, like stations on a train line. Filled circles are done and the pulsing one is next. Use the arrows to look at other days.' },
@@ -17,6 +17,12 @@ const TOURS = {
     { sel: '#screen-itinerary .chips', title: 'Filter by status', text: 'Confirmed stops make up each day’s line. Maybe and Suggested are still up for discussion; Missed shows confirmed stops whose day has passed.' },
     { sel: '#screen-itinerary .vote-mini', title: 'Vote', text: 'Thumbs up or down on any place. Open a place to confirm it, veto it, set a time, or get directions.' },
     { sel: '#screen-itinerary [data-add]', title: 'Anyone can add', text: 'Everyone can add and remove places. Removing asks first, and the trip admin can always bring a place back.' },
+  ],
+  // Shown once to people who already finished the map tour before these features existed.
+  'new-1.3': [
+    { sel: '#screen-map [data-me-btn]', title: 'New: notifications', text: 'A red ! on your picture means something new, like being added to a subgroup, someone owing you money, or a change to today’s plan. Tap it to read them. Choose what you get in Settings.' },
+    { sel: '#screen-map [data-me-btn]', title: 'New: profile photos', text: 'Tap your picture to add a photo. Friends see it on the map instead of your initials.' },
+    { sel: '#tabbar [data-tab=money]', title: 'New: currency converter', text: 'Money has a Convert tab for quick prices in your home currency. It keeps the last rates, so it works offline too.' },
   ],
   money: [
     { sel: '#screen-money .money-summary', title: 'Who owes whom', text: 'Your running total, plus exactly what you owe each person or what they owe you. Record a payment when someone pays you back.' },
@@ -34,7 +40,7 @@ let active = null;
 export function tourDone(screen) { return localStorage.getItem(KEY + screen) === 'done'; }
 export function resetTours() { Object.keys(TOURS).forEach((s) => localStorage.removeItem(KEY + s)); }
 function finish(screen, all = false) {
-  (all ? Object.keys(TOURS) : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
+  (all ? Object.keys(TOURS) : screen === 'map' ? ['map', 'new-1.3'] : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
   active?.el.remove();
   removeEventListener('resize', place);
   active = null;
@@ -44,11 +50,13 @@ function finish(screen, all = false) {
 let lastTouch = 0;
 addEventListener('pointerdown', () => { lastTouch = Date.now(); }, true);
 
+const SCREEN_OF = { 'new-1.3': 'map' };
 export function maybeStartTour(screen, { delay = 700, force = false } = {}) {
+  if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.3')) screen = 'new-1.3';
   if (!TOURS[screen] || (!force && tourDone(screen))) return;
   const openedAt = Date.now();
   setTimeout(() => {
-    if (active || document.getElementById(`screen-${screen}`)?.hidden) return;
+    if (active || document.getElementById(`screen-${SCREEN_OF[screen] || screen}`)?.hidden) return;
     if (!force && lastTouch > openedAt + 50) return;
     if (document.querySelector('.sheet:not(.closing)')) return; // don't interrupt something in progress
     start(screen);

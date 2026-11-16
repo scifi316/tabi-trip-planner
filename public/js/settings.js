@@ -8,6 +8,8 @@ import { meButton, applyTheme } from './main.js';
 import { resetTours, maybeStartTour } from './tour.js';
 import { openGroups } from './groups.js';
 import { getMap } from './map.js';
+import { prefsHtml, bindPrefs } from './notifications.js';
+import { openPhotoEditor } from './photo.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -20,7 +22,7 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs'].forEach((e) => on(e, maybeRender));
 
 const sw = (attr, checked, label) => `<label class="switch"><input type="checkbox" ${attr} ${checked ? 'checked' : ''} aria-label="${esc(label)}"><span></span></label>`;
 const seg = (name, value, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button data-${name}="${v}" aria-pressed="${value === v}">${esc(l)}</button>`).join('')}</div>`;
@@ -42,8 +44,11 @@ export function render() {
       <div class="sub">${state.conn === 'online' ? 'Connected' : state.conn === 'connecting' ? 'Connecting…' : 'Offline'}${pending ? `, ${pending} change${pending > 1 ? 's' : ''} waiting to sync` : ''}</div></div></header>
 
     <section class="section"><h2>You</h2><div class="card">
-      <div class="row">${avatar(me)}<div class="grow"><div class="label">${esc(me.name)}</div><div class="help">${admin ? 'Trip admin' : 'Member'}</div></div>
+      <div class="row"><button class="photo-btn" data-photo aria-label="Change your profile photo">${avatar(me, 'big')}<span class="photo-cam">${icon('camera', 'small')}</span></button>
+        <div class="grow"><div class="label">${esc(me.name)}</div><div class="help">${admin ? 'Trip admin' : 'Member'}</div></div>
         <button class="btn small" data-rename>Rename</button></div>
+      <div class="row"><div class="grow"><div class="label">Profile photo</div><div class="help">${me.avatar ? 'Shown on the map and next to everything you do.' : 'Your initials are shown until you add one.'}</div></div>
+        <button class="btn small" data-photo>${me.avatar ? 'Change' : 'Add photo'}</button></div>
       <div class="row stack"><div class="label">Your colour</div>
         <div class="colors" style="margin-top:8px">${COLORS.map((c) => `<button class="color-dot" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${me.color === c}"></button>`).join('')}</div></div>
       <div class="row"><div class="grow label">Password</div><button class="btn small" data-password>Change</button></div>
@@ -67,6 +72,11 @@ export function render() {
         <div class="help">Browsers stop location when a web app is in the background. For always-on sharing like Find My, install the free OwnTracks app (iOS and Android) and point it at Tabi.</div>
         <button class="btn small" data-owntracks style="margin-top:10px;align-self:flex-start">Set up OwnTracks</button>
       </div>
+    </div></section>
+
+    <section class="section" data-section="notifications"><h2>Notifications</h2><div class="card">
+      <div class="row stack"><div class="help">New ones show as a red ! on your picture at the top left. Tap it to read them. Choose what you want to hear about:</div></div>
+      ${prefsHtml()}
     </div></section>
 
     <section class="section"><h2>Appearance</h2><div class="card">
@@ -137,7 +147,7 @@ export function render() {
       ${state.activity.slice(0, 25).map((a) => `<div class="row activity">${avatar(userById(a.userId))}<div class="grow">${esc(a.text)}<time>${ago(a.ts)}</time></div></div>`).join('') || '<div class="row help">Nothing yet.</div>'}
     </div></section>
 
-    <p class="faint" style="font-size:12px;margin:0 20px 10px">Tabi 1.0. Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
+    <p class="faint" style="font-size:12px;margin:0 20px 10px">Tabi ${esc(state.config.version || '')}. Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
   </div>`;
 
   bind(el);
@@ -157,6 +167,8 @@ function bind(el) {
     if (r.ok === false) throw new Error(r.error);
   });
   el.querySelector('[data-password]').onclick = passwordSheet;
+  el.querySelectorAll('[data-photo]').forEach((b) => b.onclick = () => openPhotoEditor());
+  bindPrefs(el);
   el.querySelector('[data-signout]').onclick = async () => {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
     signOutLocal();

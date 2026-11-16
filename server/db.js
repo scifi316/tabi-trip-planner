@@ -155,6 +155,22 @@ export function openDb(dataDir) {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS attachments_expense ON attachments(expense_id);
+
+    -- Notifications: one row per person per event. Repeats of the same thing by the same
+    -- person within a few minutes update the existing row instead of piling up.
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      actor_id INTEGER,
+      ref_type TEXT,
+      ref_id TEXT,
+      count INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      read_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, id);
   `);
 
   // Column migrations for databases created by earlier versions
@@ -164,5 +180,7 @@ export function openDb(dataDir) {
   add('places', 'removed_by', 'INTEGER');
   add('places', 'group_id', 'TEXT');
   add('sessions', 'user_agent', 'TEXT');
+  add('users', 'avatar', 'TEXT');          // blob key of the profile photo
+  add('users', 'notify_prefs', 'TEXT');    // JSON: { kind: true|false }, missing kinds use defaults
   return db;
 }
