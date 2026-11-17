@@ -14,6 +14,8 @@ export const KINDS = {
   newPlaces: { label: 'New places', help: 'Anyone adds or imports places. Off to start with, because it gets busy while you’re planning.', icon: 'plus' },
   removed: { label: 'Removed places', help: 'Someone removes a place, so you can bring it back from Previously interested. Admins only.', icon: 'trash', admin: true },
   help: { label: 'Sign-in help', help: 'Someone who forgot their password asks for a reset link. Admins only.', icon: 'lock', admin: true },
+  chatMentions: { label: 'Chat: mentions and replies', help: 'Someone @mentions you, or replies to one of your messages.', icon: 'chat' },
+  chatAll: { label: 'Chat: every message', help: 'Every new message in your chats, a few at a time. Off to start with.', icon: 'chat' },
   photos: { label: 'Picture a day', help: 'Someone adds a photo of the day, and an evening reminder if the day has none yet.', icon: 'camera' },
   reactions: { label: 'Waves and reactions', help: 'Someone sends you a 👋 or another emoji. Turning this off also stops them popping up on screen.', icon: 'smile' },
   // Always on: changes to your own password or recovery code. Not a switch.
@@ -147,6 +149,9 @@ export async function openTarget(n) {
   } else if (ref.type === 'reaction' && userById(ref.id) && +ref.id !== state.me?.id) {
     emit('go', 'map');
     (await import('./friends.js')).openFriend(+ref.id, { pinpoint: true });
+  } else if (ref.type === 'chat' && ref.id) {
+    emit('go', 'chat');
+    (await import('./chat.js')).openChat(String(ref.id));
   } else if (ref.type === 'reset') {
     emit('go', 'money');
   } else if (ref.type === 'adds' || ref.type === 'import') {

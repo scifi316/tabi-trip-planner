@@ -68,6 +68,7 @@ async function shrink(img, max, quality) {
   if (!b || b.type !== 'image/webp') b = await as('image/jpeg', quality + 0.03); // Safari before 17 can't make WebP
   return { blob: b, w: c.width, h: c.height };
 }
+export { decode as decodeImage, shrink as shrinkImage };
 export async function preparePhoto(file) {
   const img = await decode(file);
   let full = await shrink(img, FULL_PX, 0.82);

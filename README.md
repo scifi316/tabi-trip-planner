@@ -78,6 +78,12 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Each person has their own login. Invite friends with a link.
 - [x] Live sync over WebSockets. Edits made offline are queued and sent when the connection returns.
 - [x] Opt-in location sharing while the app is open, with an optional "keep screen on".
+- [x] **Group chat** (1.8): one chat for **Everyone** on the trip, and one for each subgroup that only its members can see. Members join and leave a subgroup's chat as they're added or taken out.
+  - Photos (shrunk on the phone, location data removed), animated GIFs from the phone kept as they are, and GIF search through **KLIPY** when the server has a key.
+  - Replies with a quote, emoji reactions (including custom emojis), @mentions with suggestions (and @everyone), links, big single emojis. Delete your own messages; admins can delete any.
+  - Unread counts on the Chat tab and each chat, and a "New messages" line. Messages typed offline wait and send when you reconnect, once each.
+  - Notifications (lock screen too) for @mentions and replies by default; "every message" is a switch, merged per chat. Nothing is sent about a chat you have open.
+  - Phones show the list, then the conversation full screen; computers show both side by side. 30 messages a minute per person; photos share a space cap (`CHAT_MEDIA_LIMIT_MB`).
 - [x] Always-on sharing through the free **OwnTracks** app (built-in endpoint). Friends also show up inside OwnTracks.
   - Settings shows what Tabi last heard from OwnTracks for you:
     - **Working**, with the time, battery and accuracy
@@ -87,6 +93,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
     - **Not set up**
   - The setup sheet updates live, so you can test it by tapping upload in OwnTracks.
   - The username isn't case-sensitive.
+- [x] **Tabi for Android** (1.8): an app for the Android phones in the group. It's Tabi full screen (Chrome underneath, so sign-in and notifications carry over) plus background location sharing, without OwnTracks. Admins upload each build in Settings; people download it there and connect it in one tap. See [docs/ANDROID.md](docs/ANDROID.md).
 - [x] Activity feed in Settings: the latest 10, "Show more" back through the last 500 entries, and search (offline it searches what the phone has).
 - [x] **Clear all expenses** (admins, in Settings): everything or shared ones only, with typed confirmation and an Undo. The last clear can also be undone later from Settings. Everyone involved is notified.
 - [x] **Profile photos**: pick a photo, move, zoom and rotate it in a circle, and save it at 240, 320 (default) or 640 pixels. It's cropped and compressed on the phone (WebP, usually under 10 KB), and the server only accepts square images up to 640×640 and 512 KB. Replacing or removing a photo deletes the old file. Shown on map bubbles, friend chips and everywhere else your initials were.
@@ -100,6 +107,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - anyone adds or imports places (off to start with)
   - admins only: someone removes a place, so it can be brought back from Previously interested
   - someone sends you an emoji reaction
+  - chat: someone @mentions you or replies to you; optionally every message
   - picture a day: someone adds a photo, and the evening reminder
 
   Unread ones show as a red **!** on your picture, and as a badge on the home-screen icon where the phone supports it. Tap your picture to read them; tapping one takes you to the place, expense, subgroup or person. Repeats of the same thing within 15 minutes update one notification instead of piling up.
@@ -164,7 +172,6 @@ Updates never touch your data: the database stays on the server's disk outside t
 
 Ideas, roughly in priority order:
 
-- [ ] **Group chat**: trip and subgroup chats with photos, GIFs (KLIPY search, or uploads) and reactions. Feasible on the current servers; see [docs/FEASIBILITY.md](docs/FEASIBILITY.md).
 - [ ] **Games**: Connect 4 and pool against each other, with spectators. Feasible too (pool needs deterministic physics); see [docs/FEASIBILITY.md](docs/FEASIBILITY.md).
 - [ ] **Notification digests**: a quieter mode that bundles plan changes into one notification a day.
 - [ ] **Show balances in each person's home currency** (USD, EUR and so on) alongside yen, using the converter's saved home currency.
@@ -193,6 +200,8 @@ server/s3.js       Minimal S3/R2 client;  server/blobs.js  receipt and profile p
 server/notify.js   Notifications: who's told what, merging repeats, per-person switches
 server/push.js     Web Push: encryption (RFC 8291) and signing (RFC 8292) with Node’s own crypto, no extra dependencies
 server/images.js   Reads image sizes from file headers (profile photo checks)
+server/chat.js     Group chat: who's in which chat, messages, mentions, reactions, unread counts
+server/apk.js      The uploaded Android app: version and signing key read from the APK
 server/money.js    Expense validation;  server/links.js  map-link parsing;  server/db.js  schema
 public/            No-build PWA (plain ES modules)
   js/store.js      State, WebSocket sync, offline outbox
@@ -212,11 +221,16 @@ public/            No-build PWA (plain ES modules)
   js/photos.js     Picture a day: adding, viewer, album
   js/stays.js      Where we're staying: houses on the map, Home
   js/emoji.js      Custom emojis: editor and picker
+  js/chat.js       Group chat: list, conversation, photos, KLIPY GIFs, mentions
+  js/android.js    The Android app: download, connect, admin upload
+android/           Tabi for Android (Kotlin): full-screen Tabi plus background location; see docs/ANDROID.md
+.github/workflows/android.yml  Builds the APK on GitHub
   sw.js            Service worker
 deploy/setup.sh    One-command server setup (primary or backup);  deploy/update.sh  pull and rebuild
 deploy/droplet/    DigitalOcean primary (compose);  deploy/home/  home-server backup (compose)
 fly.toml           Alternative primary on Fly.io (Tokyo)
 docs/HOSTING.md    Domain, private link, DigitalOcean, home backup, failover runbook
+docs/ANDROID.md    The Android app: installing, signing, publishing updates
 docs/FEASIBILITY.md  Group chat, Connect 4 and pool: what they'd take
 ```
 
@@ -226,7 +240,7 @@ All settings are environment variables. They are listed in [`.env.example`](.env
 
 ## Location sharing in a web app
 
-Browsers, iOS Safari in particular, pause GPS when a web app is in the background. Inside Tabi, your position updates while the app is open. For Find My-style sharing, use OwnTracks: go to Settings → *Set up OwnTracks* for the URL, username and token. It's free and open source, and sends location in the background with good battery behaviour.
+Browsers, iOS Safari in particular, pause GPS when a web app is in the background. Inside Tabi, your position updates while the app is open. For Find My-style sharing on Android, install **Tabi for Android** from Settings (see [docs/ANDROID.md](docs/ANDROID.md)). On iPhone, or if you prefer it, use OwnTracks: go to Settings → *Set up OwnTracks* for the URL, username and token. It's free and open source, and sends location in the background with good battery behaviour.
 
 ## Free services used (no API keys)
 

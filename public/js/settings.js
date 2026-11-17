@@ -13,6 +13,7 @@ import { openPhotoEditor } from './photo.js';
 import { ownTracksBadge } from './owntracks.js';
 import { recoveryAction, recoveryStatus, openRecoverySetup, openResetLink } from './account.js';
 import { pushBlockHtml, bindPushBlock } from './push.js';
+import { closedSharingHtml, bindClosedSharing, inApp, adminHtml as androidAdminHtml, bindAdmin as bindAndroidAdmin } from './android.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -25,7 +26,7 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery', 'emojis', 'photos', 'stays'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery', 'emojis', 'photos', 'stays', 'app'].forEach((e) => on(e, maybeRender));
 // Keep "3 min ago" honest while Settings is open
 setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 
@@ -108,12 +109,12 @@ export function render() {
       <div class="row"><div class="grow"><div class="label">Keep screen on</div>
         <div class="help">Stops the phone sleeping while Tabi is open, so updates keep flowing.</div></div>
         ${sw('data-wake', localStorage.getItem('tabi.wake') === 'on', 'Keep screen on')}</div>` : ''}
-      <div class="row stack">
+      ${closedSharingHtml(ownTracksBadge(me.owntracks, { sharing: me.shareLocation, inApp: !!inApp() })) || `<div class="row stack">
         <div class="label">Share even when Tabi is closed</div>
         <div class="help">Browsers stop location when a web app is in the background. For always-on sharing like Find My, install the free OwnTracks app (iOS and Android) and point it at Tabi.</div>
         ${ownTracksBadge(me.owntracks, { sharing: me.shareLocation })}
         <button class="btn small" data-owntracks style="margin-top:10px;align-self:flex-start">${me.owntracks?.at ? 'OwnTracks settings' : 'Set up OwnTracks'}</button>
-      </div>
+      </div>`}
     </div></section>
 
     <section class="section" data-section="notifications"><h2>Notifications</h2><div class="card">
@@ -208,7 +209,8 @@ export function render() {
         <button class="btn small danger" data-reset-expenses>Clear…</button></div>
       ${state.expenseReset ? `<div class="row"><div class="grow"><div class="label">Last cleared ${ago(state.expenseReset.at)}</div><div class="help">${state.expenseReset.count} expense${state.expenseReset.count === 1 ? '' : 's'}, by ${esc(state.expenseReset.by)}.</div></div>
         <button class="btn small" data-restore-expenses>Bring back</button></div>` : ''}
-    </div></section>` : ''}
+    </div></section>
+    ${androidAdminHtml()}` : ''}
 
     <section class="section" data-section="activity"><h2>Recent activity</h2><div class="card">
       <div class="row act-search"><label class="search-field">${icon('search', 'small')}<input type="search" class="input" data-act-q placeholder="Search activity" aria-label="Search activity" value="${esc(act.q)}" autocomplete="off" enterkeyhint="search"></label></div>
@@ -279,7 +281,9 @@ function bind(el) {
     localStorage.setItem('tabi.wake', e.target.checked ? 'on' : 'off');
     if (e.target.checked) requestWake();
   });
-  el.querySelector('[data-owntracks]').onclick = ownTracksSheet;
+  if (el.querySelector('[data-android-row]')) bindClosedSharing(el, ownTracksSheet);
+  else el.querySelector('[data-owntracks]').onclick = ownTracksSheet;
+  if (el.querySelector('[data-section=android]')) bindAndroidAdmin(el);
   el.querySelector('[data-reset-expenses]')?.addEventListener('click', resetExpensesSheet);
   el.querySelector('[data-restore-expenses]')?.addEventListener('click', () => restoreExpenses(state.expenseReset));
 

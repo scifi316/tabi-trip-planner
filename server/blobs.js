@@ -17,7 +17,7 @@ export function createBlobStore(dataDir, s3) {
       if (!fs.existsSync(file)) fs.writeFileSync(file, buf);
       if (s3) {
         const exists = await s3.head(`blobs/${key}`).catch(() => null);
-        if (!exists) await s3.put(`blobs/${key}`, buf, { contentType: { png: 'image/png', webp: 'image/webp' }[ext] || 'image/jpeg' });
+        if (!exists) await s3.put(`blobs/${key}`, buf, { contentType: { png: 'image/png', webp: 'image/webp', gif: 'image/gif', apk: 'application/vnd.android.package-archive' }[ext] || 'image/jpeg' });
       }
       return key;
     },

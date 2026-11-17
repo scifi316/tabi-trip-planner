@@ -13,6 +13,8 @@ export const NOTIFY_KINDS = {
   help: { default: true, admin: true },    // someone can't sign in and asks for a password reset link
   reactions: { default: true },            // someone sends you an emoji (👋)
   photos: { default: true },               // picture a day: someone adds one, or the evening reminder
+  chatMentions: { default: true },         // chat: someone @mentions you or replies to you
+  chatAll: { default: false },             // chat: every message (merged per chat)
   // Always on, not shown in Settings: changes to your own account's password or recovery code.
   security: { default: true, locked: true },
 };
