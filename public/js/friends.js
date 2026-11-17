@@ -2,6 +2,7 @@
 import { state, on, emit, userById, groupsOn, today, tripDays, defaultDay, personDayStops } from './store.js';
 import { openSheet, esc, icon, avatar, ago, distanceM, fmtDay } from './ui.js';
 import { myPosition } from './location.js';
+import { reactionRowHtml, bindReactionRow, sendReaction } from './reactions.js';
 
 const STALE = 15 * 60e3;
 let listSheet = null;
@@ -21,7 +22,7 @@ const distanceText = (loc) => {
 };
 const groupToday = (id) => groupsOn(today()).find((g) => g.memberIds.includes(+id));
 
-['locations', 'users', 'subgroups', 'expenses', 'places', 'mypos'].forEach((e) => on(e, () => {
+['locations', 'users', 'subgroups', 'expenses', 'places', 'mypos', 'reaction'].forEach((e) => on(e, () => {
   if (listSheet && !listSheet.closed) renderList();
   if (friendSheet && !friendSheet.closed) renderFriend();
 }));
@@ -37,7 +38,10 @@ function renderList() {
     .sort((a, b) => (b.st.loc?.ts || 0) - (a.st.loc?.ts || 0) || a.u.name.localeCompare(b.u.name));
   const live = others.filter((x) => x.st.loc);
   listSheet.body.innerHTML = `
-    ${live.length > 1 ? `<button class="btn block" data-all style="margin-bottom:12px">${icon('fit')}Show everyone on the map</button>` : ''}
+    <div class="links friends-actions">
+      ${others.length ? `<button class="btn" data-wave data-tip="Send everyone on the trip a 👋"><span class="react-e" aria-hidden="true">👋</span>Wave to everyone</button>` : ''}
+      ${live.length > 1 ? `<button class="btn" data-all>${icon('fit')}Show everyone on the map</button>` : ''}
+    </div>
     <div class="card" style="margin:0;border:1px solid var(--line)">
       ${others.map(({ u, st }) => {
         const g = groupToday(u.id);
@@ -50,6 +54,12 @@ function renderList() {
     </div>`;
   listSheet.body.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => { listSheet.close(); openFriend(+b.dataset.friend, { pinpoint: true }); });
   listSheet.body.querySelector('[data-all]')?.addEventListener('click', () => { listSheet.close(); emit('fit-friends'); });
+  listSheet.body.querySelector('[data-wave]')?.addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    await sendReaction('all', '👋');
+    setTimeout(() => { b.disabled = false; }, 1500);
+  });
 }
 
 // ---------- one friend ----------
@@ -109,6 +119,8 @@ async function renderFriend() {
       : `<p class="help">${u.shareLocation ? `${esc(u.name)} has sharing on, but their phone hasn’t sent a location yet.` : `${esc(u.name)} isn’t sharing their location.`}</p>`}
     </section>
 
+    ${reactionRowHtml(u)}
+
     <section class="friend-section">
       <h3>${icon('calendar', 'small')} ${day ? `Plan for ${day === today() ? 'today' : esc(fmtDay(day))}` : 'Plan'}</h3>
       ${stops.length ? `<div class="mini-plan">${stops.slice(0, 5).map((s, i) => `<button class="mini-stop" data-place="${s.place.id}">
@@ -133,6 +145,7 @@ async function renderFriend() {
   const toMap = () => { if (document.getElementById('screen-map').hidden) emit('go', 'map'); };
   b.querySelector('[data-follow]')?.addEventListener('click', () => { toMap(); emit('focus-friend', u.id); emit('follow-friend', u.id); });
   b.querySelector('[data-unfollow]')?.addEventListener('click', () => emit('stop-follow'));
+  bindReactionRow(b, u);
   b.querySelector('[data-itin]').onclick = () => { friendSheet.close(); emit('itin-person', u.id); emit('go', 'itinerary'); };
   b.querySelector('[data-money]').onclick = () => { friendSheet.close(); emit('money-with', u.id); emit('go', 'money'); };
   b.querySelector('[data-settle]')?.addEventListener('click', async () => {

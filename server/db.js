@@ -172,6 +172,17 @@ export function openDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS notifications_user ON notifications(user_id, id);
 
+    -- Emoji reactions between people ("Sam sent you 👋").
+    CREATE TABLE IF NOT EXISTS reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_id INTEGER NOT NULL,
+      to_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reactions_to ON reactions(to_id, id);
+    CREATE INDEX IF NOT EXISTS reactions_from ON reactions(from_id, id);
+
     -- One-time links an admin makes so someone who forgot their password can set a new one.
     CREATE TABLE IF NOT EXISTS password_resets (
       token_hash TEXT PRIMARY KEY,
@@ -202,6 +213,9 @@ export function openDb(dataDir) {
   add('users', 'recovery_hash', 'TEXT');   // hashed recovery code for "Forgot password?"
   add('users', 'recovery_set_at', 'INTEGER');
   add('users', 'recovery_snooze', 'INTEGER'); // "Remind me later" on the set-up prompt, until this time
+  // The newest recovery code stays viewable in Settings until its owner confirms they saved it; then only the hash is kept.
+  add('users', 'recovery_pending', 'TEXT');
+  add('users', 'recovery_ack_at', 'INTEGER');
   restoreFormerMembers(db);
   return db;
 }

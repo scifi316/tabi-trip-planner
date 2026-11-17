@@ -1,6 +1,6 @@
 // In-memory debug event log for the developer console. Nothing here is written to disk:
 // it holds the most recent events of each kind and streams new ones to open consoles.
-const LIMITS = { log: 800, loc: 1000, owntracks: 300, op: 400, net: 400, ws: 200 };
+const LIMITS = { log: 800, loc: 1000, owntracks: 300, op: 400, net: 400, ws: 200, client: 300 };
 const buffers = Object.fromEntries(Object.keys(LIMITS).map((k) => [k, []]));
 const subscribers = new Set();
 let seq = 0;

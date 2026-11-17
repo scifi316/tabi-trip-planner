@@ -28,6 +28,7 @@ export const state = {
   activity: [],
   notifications: [],
   unread: 0,
+  reactions: [], // recent emoji reactions to or from me, newest first
   config: {},
   conn: 'offline', // online | offline | connecting
   outbox: JSON.parse(localStorage.getItem(LS.outbox) || '[]'),
@@ -39,7 +40,7 @@ function persist() {
     localStorage.setItem(LS.state, JSON.stringify({
       me: state.me, trip: state.trip, users: [...state.users, ...(state.formerUsers || [])], places: [...state.places.values()], subgroups: state.subgroups,
       expenses: [...state.expenses.values()], locations: state.locations, activity: state.activity.slice(0, 30), config: state.config,
-      notifications: state.notifications.slice(0, 60), unread: state.unread,
+      notifications: state.notifications.slice(0, 60), unread: state.unread, reactions: state.reactions.slice(0, 60),
     }));
   } catch { /* quota: ignore */ }
 }
@@ -52,7 +53,7 @@ export function loadCached() {
     if (!c || !c.me) return false;
     setUsers(c.users);
     Object.assign(state, { me: c.me, trip: c.trip, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
-      notifications: c.notifications || [], unread: c.unread || 0 });
+      notifications: c.notifications || [], unread: c.unread || 0, reactions: c.reactions || [] });
     state.places = new Map((c.places || []).map((p) => [p.id, p]));
     state.expenses = new Map((c.expenses || []).map((e) => [e.id, e]));
     for (const o of state.outbox) applyLocal(o.op, o.data);
@@ -138,6 +139,7 @@ function handle(m) {
       state.online = m.online; state.activity = m.activity; state.config = m.config || {};
       state.subgroups = m.subgroups || [];
       state.notifications = m.notifications || []; state.unread = m.unread || 0;
+      state.reactions = m.reactions || [];
       state.expenseReset = m.expenseReset || null;
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
@@ -182,6 +184,18 @@ function handle(m) {
       emit('notifs', { fresh: m.item }); persistSoon(); break;
     }
     case 'notif.unread': state.unread = m.unread; emit('notifs'); persistSoon(); break;
+    case 'reaction': {
+      if (state.reactions.some((r) => r.id === m.r.id)) break;
+      state.reactions.unshift(m.r);
+      state.reactions.length = Math.min(state.reactions.length, 60);
+      emit('reaction', { r: m.r, all: !!m.all }); persistSoon(); break;
+    }
+    case 'notif.gone': {
+      const gone = new Set(m.ids || []);
+      state.notifications = state.notifications.filter((n) => !gone.has(n.id));
+      emit('notifs'); persistSoon(); break;
+    }
+    case 'notif.reset': state.notifications = m.notifications || []; state.unread = m.unread || 0; emit('notifs', { reset: true }); persistSoon(); break;
     case 'me.recovery': if (state.me) state.me.recovery = m.recovery; emit('me-recovery'); persistSoon(); break;
     case 'owntracks.status': if (state.me) state.me.owntracks = m.status; emit('owntracks'); persistSoon(); break;
     case 'expense.resetInfo': state.expenseReset = m.info; emit('expense-reset'); break;

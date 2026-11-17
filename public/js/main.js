@@ -2,7 +2,8 @@
 import { state, on, emit, api, op, connect, loadCached, markSignedIn, signOutLocal } from './store.js';
 import { maybeStartTour } from './tour.js';
 import { $, $$, esc, icon, avatar, toast, openSheet, closeAllSheets, closePeekSheets } from './ui.js';
-import { listHtml, bindList, markAllRead, unreadCount, clearNotifToasts } from './notifications.js';
+import { listHtml, bindList, markAllRead, unreadCount, clearNotifToasts, clearAll, wideScreen } from './notifications.js';
+import './reactions.js';
 import { openPhotoEditor } from './photo.js';
 import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
@@ -50,13 +51,18 @@ function accountSheet() {
   // Unread ones stay highlighted while the sheet is open; they're marked read straight away.
   const fresh = new Set(state.notifications.filter((n) => !n.read).map((n) => n.id));
   clearNotifToasts();
+  // On a computer this opens by the avatar (top left) and shows the latest few; the full list has its own page.
+  const wide = wideScreen();
+  const limit = wide ? 5 : 40;
+  const more = () => (wide && state.notifications.length ? `<button class="btn block small notif-all" data-see-all>${icon('bell', 'small')}See all notifications${state.notifications.length > limit ? ` (${state.notifications.length})` : ''}</button>` : '');
   const s = openSheet({
     className: 'account-sheet',
     head: `<div style="display:flex;gap:12px;align-items:center" class="grow"><button class="photo-btn" data-photo aria-label="Change your profile photo">${avatar(me, 'big')}<span class="photo-cam">${icon('camera', 'small')}</span></button><div><h2>${esc(me.name)}</h2>
       <div class="sub">${state.conn === 'online' ? 'Signed in and connected' : state.conn === 'connecting' ? 'Signed in, connecting…' : 'Signed in, offline'}${pending ? `. ${pending} change${pending > 1 ? 's' : ''} will sync when you reconnect` : ''}</div></div></div>`,
     body: `<div class="notif-head"><h3>Notifications</h3>${fresh.size ? `<span class="tag new">${fresh.size} new</span>` : ''}<span class="grow"></span>
-        <button class="btn small ghost" data-notif-settings>Choose what you get</button></div>
-      <div data-notifs>${listHtml(state.notifications, { fresh })}</div>
+        <button class="btn small ghost" data-notif-clear ${state.notifications.length ? '' : 'hidden'}>Clear all</button>
+        <button class="btn small ghost" data-notif-settings>Choose</button></div>
+      <div data-notifs>${listHtml(state.notifications, { fresh, limit })}${more()}</div>
       <div class="card" style="margin:14px 0 12px;background:var(--surface-2)">
         <div class="row"><div class="grow"><div class="label">Share my location</div><div class="help">${me.shareLocation ? 'Friends can see you on the map' : 'Off'}</div></div>
           <label class="switch"><input type="checkbox" data-share ${me.shareLocation ? 'checked' : ''} aria-label="Share my location"><span></span></label></div>
@@ -70,14 +76,19 @@ function accountSheet() {
   s.el.querySelector('[data-go-settings]').onclick = () => { s.close(); go('settings'); };
   s.el.querySelector('[data-notif-settings]').onclick = () => { s.close(); go('settings').then(() => $('#screen-settings [data-section=notifications]')?.scrollIntoView({ block: 'start' })); };
   s.el.querySelector('[data-photo]').onclick = () => openPhotoEditor();
+  s.el.querySelector('[data-notif-clear]').onclick = () => clearAll();
+  const bindMore = () => s.el.querySelector('[data-see-all]')?.addEventListener('click', () => { s.close(); go('notifications'); });
   bindList(s.el, () => s.close());
+  bindMore();
   markAllRead();
   const off = on('notifs', () => {
     if (s.closed) return off();
     state.notifications.filter((n) => !n.read).forEach((n) => fresh.add(n.id));
     const box = s.el.querySelector('[data-notifs]');
-    box.innerHTML = listHtml(state.notifications, { fresh });
+    box.innerHTML = listHtml(state.notifications, { fresh, limit }) + more();
+    s.el.querySelector('[data-notif-clear]').hidden = !state.notifications.length;
     bindList(box, () => s.close());
+    bindMore();
     if (state.unread) markAllRead();
   });
 }
@@ -88,13 +99,19 @@ const loaded = {};
 async function go(tab) {
   current = tab;
   closePeekSheets();
-  for (const s of ['map', 'itinerary', 'money', 'settings']) $(`#screen-${s}`).hidden = s !== tab;
+  if (tab === 'notifications' && !wideScreen()) { // phones use the account sheet instead
+    tab = 'map';
+    setTimeout(() => $('[data-me-btn]')?.click(), 50);
+  }
+  current = tab;
+  for (const s of ['map', 'itinerary', 'money', 'settings', 'notifications']) $(`#screen-${s}`).hidden = s !== tab;
   $$('.tab[data-tab]').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', money: 'yen', settings: 'settings' }[tab]}`);
+  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', money: 'yen', settings: 'settings', notifications: 'bell' }[tab]}`);
   if (tab === 'map') (await loaded.map).resizeMap();
   if (tab === 'itinerary') (await loaded.itin).showItinerary();
   if (tab === 'money') (await loaded.money).showMoney();
   if (tab === 'settings') (await loaded.settings).showSettings();
+  if (tab === 'notifications') (await loaded.notifs).showNotifications();
   maybeStartTour(tab);
   refreshMeButtons();
   history.replaceState(null, '', tab === 'map' ? '/' : `/#${tab}`);
@@ -177,6 +194,7 @@ async function startApp() {
   loaded.itin = import('./itinerary.js');
   loaded.settings = import('./settings.js');
   loaded.money = import('./money.js');
+  loaded.notifs = import('./notifpage.js');
   await import('./location.js');
   const m = await loaded.map;
   m.initMap();
@@ -196,7 +214,7 @@ async function startApp() {
   refreshMeButtons();
 
   const hash = location.hash.slice(1);
-  go(['itinerary', 'money', 'settings'].includes(hash) ? hash : 'map');
+  go(['itinerary', 'money', 'settings', 'notifications'].includes(hash) ? hash : 'map');
   connect();
 }
 
@@ -233,6 +251,19 @@ async function boot() {
       <button class="btn primary" onclick="location.reload()">Try again</button></div>`;
   }
 }
+
+// ---------- errors from this browser go to the developer console ----------
+// (So "this button doesn't work" can be traced. At most a few per page load.)
+let reported = 0;
+function reportError(msg, where) {
+  if (reported++ >= 10 || !state.signedIn || !navigator.onLine) return;
+  fetch('/api/clientlog', {
+    method: 'POST', credentials: 'same-origin', keepalive: true, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ msg: String(msg).slice(0, 400), where: String(where || '').slice(0, 200), build: document.querySelector('meta[name=tabi-build]')?.content, screen: `${innerWidth}×${innerHeight} ${location.hash || '#map'}` }),
+  }).catch(() => {});
+}
+addEventListener('error', (e) => { if (e.message) reportError(e.message, `${(e.filename || '').split('/').pop()}:${e.lineno}:${e.colno}`); });
+addEventListener('unhandledrejection', (e) => reportError(e.reason?.message || e.reason, (e.reason?.stack || '').split('\n')[1]?.trim()));
 
 // ---------- staying up to date ----------
 // iOS keeps home-screen apps frozen in the background and resumes the old page, so after an update

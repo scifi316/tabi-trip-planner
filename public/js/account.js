@@ -40,48 +40,136 @@ function selectCode(root) {
   getSelection().addRange(r);
 }
 
+// ---------- the recovery code's states ----------
+// none        – never set up
+// pending     – made, and works, but not confirmed as saved: it can be shown again from Settings
+// unconfirmed – made before v1.6, when we didn't ask; it works, but can't be shown again
+// saved       – confirmed as saved, and hidden for good
+export const recoveryStatus = () => state.me?.recovery?.status || (state.me?.recovery?.set ? 'saved' : 'none');
+
+// Show a code, with "I've saved it" to hide it. Closing the sheet any other way keeps it in Settings.
+function showCode(code, { title, sub }) {
+  shownThisLoad = true; // they've just seen it; don't also nag this visit
+  const name = state.me.name;
+  let acked = false;
+  const s = openSheet({
+    title, sub, className: 'rc-sheet',
+    onClose: () => { if (!acked) toast('Your code stays in Settings › Account recovery until you’ve saved it.', { ms: 5000 }); },
+    body: codeBlock(code, name),
+    foot: '<button class="btn" data-later>Later</button><button class="btn primary" data-done disabled>I’ve saved it, hide it</button>',
+  });
+  const done = s.el.querySelector('[data-done]');
+  bindCodeBlock(s.el, code, name, (ok) => { done.disabled = !ok; });
+  s.el.querySelector('[data-later]').onclick = () => s.close();
+  done.onclick = async () => {
+    done.disabled = true;
+    const r = await op('recovery.ack');
+    if (r.ok === false) { done.disabled = false; return toast(r.error || 'You need to be online to do this.'); }
+    acked = true;
+    s.close();
+    toast('Account recovery is set up');
+  };
+  return s;
+}
+
 // ---------- set up (or replace) the recovery code, from the prompt or Settings ----------
 export async function openRecoverySetup({ replacing = false } = {}) {
   const r = await op('recovery.setup');
   if (r.ok === false) return toast(r.error || 'You need to be online to do this.');
-  const name = state.me.name;
-  const s = openSheet({
+  showCode(r.code, {
     title: replacing ? 'Your new recovery code' : 'Your recovery code',
     sub: replacing ? 'The old code no longer works.' : 'If you ever forget your password, this lets you set a new one yourself.',
-    className: 'rc-sheet',
-    body: codeBlock(r.code, name),
-    foot: '<button class="btn primary" data-done disabled>Done</button>',
   });
-  const done = s.el.querySelector('[data-done]');
-  bindCodeBlock(s.el, r.code, name, (ok) => { done.disabled = !ok; });
-  done.onclick = () => { s.close(); toast('Account recovery is set up'); };
 }
 
-// Asked once after signing in (and again 3 days after "Remind me later") until it's set up.
-let prompted = false;
-export function maybePromptRecovery() {
+// "View code" in Settings, while it hasn't been confirmed as saved
+export async function viewRecoveryCode() {
+  const r = await op('recovery.view');
+  if (r.ok === false) return toast(r.error || 'You need to be online to see your code.');
+  showCode(r.code, { title: 'Your recovery code', sub: 'Save it somewhere safe, then hide it. It already works.' });
+}
+
+// Codes made before we asked: did they save it?
+export function confirmOldCode({ onLater } = {}) {
+  const at = state.me?.recovery?.setAt;
+  const s = openSheet({
+    title: 'Did you save your recovery code?',
+    className: 'rc-sheet',
+    body: `
+      <div class="rc-intro"><div class="rc-icon">${icon('lock')}</div>
+        <p>You made one${at ? ` on ${new Date(at).toLocaleDateString([], { day: 'numeric', month: 'short' })}` : ''}. For safety Tabi only keeps a scrambled copy, so it can’t be shown again.</p></div>
+      <p class="help">If you can’t find it, make a new one: the old code stops working.</p>
+      ${onLater ? '<button class="linklike" data-later>Remind me later</button>' : ''}`,
+    foot: '<button class="btn" data-new>Make a new code</button><button class="btn primary" data-yes>Yes, I saved it</button>',
+  });
+  s.el.querySelector('[data-new]').onclick = () => { s.close(); openRecoverySetup({ replacing: true }); };
+  s.el.querySelector('[data-later]')?.addEventListener('click', () => { onLater(); s.close(); });
+  s.el.querySelector('[data-yes]').onclick = async () => {
+    const r = await op('recovery.ack');
+    if (r.ok === false) return toast(r.error || 'You need to be online to do this.');
+    s.close();
+    toast('Thanks. Account recovery is set up');
+  };
+}
+
+// The Settings button does whatever the next step is
+export function recoveryAction() {
+  const st = recoveryStatus();
+  if (st === 'pending') return viewRecoveryCode();
+  if (st === 'unconfirmed') return confirmOldCode();
+  return openRecoverySetup({ replacing: st === 'saved' });
+}
+
+// Asked after signing in (and again 3 days after "Remind me later") until the code is saved.
+// Checked whenever the account changes, not just once per load, so it isn't missed when the
+// app starts offline or from a saved copy.
+let prompting = false;
+let shownThisLoad = false;
+const due = () => {
   const rec = state.me?.recovery;
-  if (prompted || !rec || rec.set || (rec.snoozeUntil && rec.snoozeUntil > Date.now())) return;
-  prompted = true;
+  return !!rec && recoveryStatus() !== 'saved' && !(rec.snoozeUntil && rec.snoozeUntil > Date.now());
+};
+export function maybePromptRecovery() {
+  if (prompting || shownThisLoad || !due()) return;
+  prompting = true;
   const show = () => {
-    // Wait for tours and other sheets to finish first
-    if (document.querySelector('.tour, .sheet:not(.closing)')) return setTimeout(show, 3000);
-    const now = state.me?.recovery;
-    if (!now || now.set || (now.snoozeUntil && now.snoozeUntil > Date.now())) return; // set up or snoozed meanwhile
-    const s = openSheet({
-      title: 'Protect your account',
-      sub: 'Takes 30 seconds.',
-      className: 'rc-sheet',
-      body: `
-        <div class="rc-intro">
-          <div class="rc-icon">${icon('lock')}</div>
-          <p>If you forget your password, a <b>recovery code</b> lets you set a new one yourself, without a trip admin, and without losing your expenses or anything else.</p>
-        </div>
-        <p class="help">You’ll get a code like <span class="num">K7QF-2MXD-9PRA-W4ZT</span>. Save it in your password manager or notes.</p>`,
-      foot: '<button class="btn" data-later>Remind me later</button><button class="btn primary" data-now>Set it up</button>',
-    });
-    s.el.querySelector('[data-later]').onclick = () => { op('recovery.snooze'); s.close(); };
-    s.el.querySelector('[data-now]').onclick = () => { s.close(); openRecoverySetup(); };
+    if (!due()) { prompting = false; return; } // saved or snoozed meanwhile
+    // Wait for tours, other sheets and sign-in to finish first
+    if (document.querySelector('.tour, .sheet:not(.closing)') || document.getElementById('app')?.hidden) return setTimeout(show, 3000);
+    prompting = false;
+    shownThisLoad = true;
+    const st = recoveryStatus();
+    const later = () => { op('recovery.snooze'); s.close(); };
+    let s;
+    if (st === 'pending') {
+      s = openSheet({
+        title: 'Finish protecting your account',
+        sub: 'Your recovery code is ready.',
+        className: 'rc-sheet',
+        body: `<div class="rc-intro"><div class="rc-icon">${icon('lock')}</div>
+          <p>You haven’t confirmed that you saved it yet. Save it in your password manager or notes, then hide it.</p></div>`,
+        foot: '<button class="btn" data-later>Remind me later</button><button class="btn primary" data-now>Show my code</button>',
+      });
+      s.el.querySelector('[data-now]').onclick = () => { s.close(); viewRecoveryCode(); };
+    } else if (st === 'unconfirmed') {
+      confirmOldCode({ onLater: () => op('recovery.snooze') });
+      return;
+    } else {
+      s = openSheet({
+        title: 'Protect your account',
+        sub: 'Takes 30 seconds.',
+        className: 'rc-sheet',
+        body: `
+          <div class="rc-intro">
+            <div class="rc-icon">${icon('lock')}</div>
+            <p>If you forget your password, a <b>recovery code</b> lets you set a new one yourself, without a trip admin, and without losing your expenses or anything else.</p>
+          </div>
+          <p class="help">You’ll get a code like <span class="num">K7QF-2MXD-9PRA-W4ZT</span>. Save it in your password manager or notes.</p>`,
+        foot: '<button class="btn" data-later>Remind me later</button><button class="btn primary" data-now>Set it up</button>',
+      });
+      s.el.querySelector('[data-now]').onclick = () => { s.close(); openRecoverySetup(); };
+    }
+    s.el.querySelector('[data-later]').onclick = later;
   };
   setTimeout(show, 2500);
 }
@@ -143,7 +231,12 @@ function newCodeScreen(el, { name, code }) {
     </div>`;
   const go = el.querySelector('[data-go]');
   bindCodeBlock(el, code, name, (ok) => { go.disabled = !ok; });
-  go.onclick = () => { location.replace('/'); };
+  go.onclick = async () => {
+    go.disabled = true;
+    // They ticked "I've saved it": hide the code. (If this fails it simply stays viewable in Settings.)
+    await api('/api/recovery/ack', { method: 'POST' }).catch(() => {});
+    location.replace('/');
+  };
 }
 
 // ---------- a reset link from an admin ----------

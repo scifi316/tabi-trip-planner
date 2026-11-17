@@ -1,8 +1,9 @@
 // Tooltips for icon buttons on computers: shown on mouse hover (after a short pause) and on keyboard
-// focus. Never on touch screens, where a long press already does other things.
+// focus. Never for touch, where a long press already does other things.
+// Each event says whether it came from a mouse, which is what we go by. (Laptops with a touchscreen
+// report "no hover" for the whole page in Chrome, so a media query hid tooltips there entirely.)
 // Text comes from data-tip, or the button's aria-label.
 const SEL = '[data-tip], .ctl, .icon-btn[aria-label], .fab';
-const canHover = matchMedia('(hover: hover) and (pointer: fine)');
 let tip = null, current = null, timer = 0;
 
 function textOf(el) { return el.dataset.tip || el.getAttribute('aria-label') || ''; }
@@ -47,7 +48,7 @@ export function hideTip() {
 }
 
 document.addEventListener('pointerover', (e) => {
-  if (e.pointerType !== 'mouse' || !canHover.matches) return;
+  if (e.pointerType !== 'mouse') return;
   const el = e.target.closest?.(SEL);
   if (!el || el === current) return;
   hideTip();

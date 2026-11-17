@@ -4,11 +4,11 @@ import { esc } from './ui.js';
 const $ = (s) => document.querySelector(s);
 const TABS = [
   ['overview', 'Overview'], ['locations', 'Locations'], ['owntracks', 'OwnTracks'], ['places', 'Places'],
-  ['activity', 'Activity'], ['network', 'Network'], ['logs', 'Server log'],
+  ['activity', 'Activity'], ['network', 'Network'], ['client', 'App errors'], ['logs', 'Server log'],
 ];
-const KINDS = ['log', 'loc', 'owntracks', 'op', 'net', 'ws'];
+const KINDS = ['log', 'loc', 'owntracks', 'op', 'net', 'ws', 'client'];
 const ev = Object.fromEntries(KINDS.map((k) => [k, []]));
-const MAX = { log: 800, loc: 1000, owntracks: 300, op: 400, net: 400, ws: 200 };
+const MAX = { log: 800, loc: 1000, owntracks: 300, op: 400, net: 400, ws: 200, client: 300 };
 let tab = location.hash.slice(1) || 'overview';
 let overview = null, people = [], places = null, subgroups = [];
 let freshIds = new Set();
@@ -83,7 +83,7 @@ function renderHead() {
   role.textContent = `${h.node || overview?.host || '?'}: ${h.role || '?'}${h.epoch ? `, epoch ${h.epoch}` : ''}`;
 }
 function renderTabs() {
-  const counts = { locations: ev.loc.length, owntracks: ev.owntracks.length, places: places?.length, activity: ev.op.length, network: ev.net.length, logs: ev.log.length };
+  const counts = { locations: ev.loc.length, owntracks: ev.owntracks.length, places: places?.length, activity: ev.op.length, network: ev.net.length, client: ev.client.length, logs: ev.log.length };
   $('#tabs').innerHTML = TABS.map(([k, label]) => `<button role="tab" data-tab="${k}" aria-selected="${tab === k}">${label}${counts[k] != null ? `<span class="n">${counts[k]}</span>` : ''}</button>`).join('');
   $('#tabs').querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => { tab = b.dataset.tab; location.hash = tab; render(); });
 }
@@ -92,7 +92,7 @@ function render() {
   renderTabs();
   const view = $('#view');
   const keepScroll = view.querySelector('.tbl-wrap')?.scrollTop;
-  ({ overview: viewOverview, locations: viewLocations, owntracks: viewOwnTracks, places: viewPlaces, activity: viewActivity, network: viewNetwork, logs: viewLogs })[tab]?.(view);
+  ({ overview: viewOverview, locations: viewLocations, owntracks: viewOwnTracks, places: viewPlaces, activity: viewActivity, network: viewNetwork, client: viewClient, logs: viewLogs })[tab]?.(view);
   if (keepScroll) { const w = view.querySelector('.tbl-wrap'); if (w) w.scrollTop = keepScroll; }
   freshIds = new Set();
 }
@@ -167,7 +167,7 @@ async function renderAccountsPanel() {
     ${people.map((p) => `<tr>
       <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
       <td>${p.removedAt ? `<span class="badge">former member</span><div class="hint">since ${fmtDateTime(p.removedAt)}</div>` : p.admin ? '<span class="badge good">admin</span>' : 'member'}${!p.hasPassword ? '<div class="hint">no password yet</div>' : ''}</td>
-      <td>${p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>'}</td>
+      <td>${({ saved: '<span class="badge good">saved</span>', pending: '<span class="badge warn">made, not saved yet</span>', unconfirmed: '<span class="badge">made (before 1.6), not confirmed</span>' })[p.recoveryStatus] || (p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>')}</td>
       <td class="num">${p.sessions?.n || 0}</td>
       <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? ago(p.sessions.last) : '–'}</td>
       <td>${p.removedAt ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
@@ -387,6 +387,17 @@ function viewNetwork(v) {
         || '<tr class="empty-row"><td colspan="5">No outbound requests yet</td></tr>'}
     </tbody></table></div>`;
   $('#nh').onchange = (e) => { ui.netHost = e.target.value; render(); };
+}
+
+// Errors from people's browsers (the app reports them, at most 30 per person per server start)
+function viewClient(v) {
+  const list = ev.client.slice().reverse();
+  v.innerHTML = `
+    <p class="hint">JavaScript errors from people’s phones and computers since the server started, newest first. Useful when someone says a button “doesn’t work”.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>When</th><th>Person</th><th>Error</th><th>Where</th><th>Screen</th><th>Browser</th></tr></thead><tbody>
+    ${list.map((e) => `<tr><td>${fmtTime(e.ts)}</td><td>${esc(e.user)}</td><td class="mono">${esc(e.msg)}</td><td class="mono hint">${esc(e.where)}</td><td>${esc(e.screen)}</td><td class="hint">${esc(e.ua)}<div>${esc(e.build)}</div></td></tr>`).join('')
+      || '<tr class="empty-row"><td colspan="6">No errors reported since the server started</td></tr>'}
+    </tbody></table></div>`;
 }
 
 function viewLogs(v) {

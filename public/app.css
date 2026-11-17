@@ -19,6 +19,8 @@
   --tab-h: 62px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
 
@@ -720,6 +722,111 @@ label.btn { cursor: pointer; }
 .notif-empty b { color: var(--ink); }
 .notif-empty .help { font-size: 13px; margin-top: 2px; }
 
+/* notification rows: the whole row opens it, × dismisses it */
+.notif-item { position: relative; display: flex; align-items: flex-start; transition: opacity .16s, transform .16s; }
+.notif-item .notif { padding-right: 40px; }
+.notif-x { position: absolute; right: 4px; top: 8px; color: var(--ink-3); opacity: .7; }
+.notif-x:hover, .notif-x:focus-visible { opacity: 1; }
+.notif-item.gone { opacity: 0; transform: translateX(16px); }
+.notif-all { margin-top: 8px; }
+@media (hover: hover) and (pointer: fine) {
+  .notif-x { opacity: 0; }
+  .notif-item:hover .notif-x, .notif-x:focus-visible { opacity: .8; }
+}
+
+/* the rail button and the page (computers) */
+.tab-notifs { display: none !important; }
+.tab-notifs > span:not(.tab-badge) { font-size: 10.5px; letter-spacing: -.01em; }
+.tab-badge {
+  position: absolute; top: 10px; left: calc(50% + 4px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--c-missed); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.notif-page .page-head .btn { flex: none; }
+.notif-bar { display: flex; align-items: center; gap: 8px; padding: 0 14px 12px; flex-wrap: wrap; }
+.notif-bar .seg { flex: 0 0 auto; }
+.notif-bar .grow { flex: 1; }
+.notif-card { padding: 4px 14px 10px; }
+.notif-day h3 { margin: 12px 0 4px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.notif-list.grouped { max-height: none; overflow: visible; }
+.notif-card > .notif-empty { padding: 14px 4px; }
+.notif-older { margin: 12px 10px 0; width: calc(100% - 20px); }
+.notif-end { text-align: center; margin: 14px 0 0; }
+@media (min-width: 900px) and (min-height: 521px) {
+  .tab-notifs { display: flex !important; }
+  /* the account sheet opens next to the avatar you clicked, not in the far corner */
+  .sheet.account-sheet { left: 100px; right: auto; top: calc(var(--safe-t) + 12px); bottom: auto; width: 400px; max-height: calc(100dvh - 24px); animation: drop .22s var(--ease); }
+  .app.nav-collapsed ~ #sheet-root .sheet.account-sheet { left: 16px; }
+  .sheet.account-sheet.closing { transform: translateY(-8px); opacity: 0; transition: transform .16s ease-in, opacity .16s; }
+}
+
+/* recovery reminder at the top of Settings */
+.rc-banner { display: flex; gap: 12px; align-items: center; margin: 0 10px 18px; padding: 12px 14px; border-radius: var(--r-m);
+  background: color-mix(in srgb, var(--c-maybe) 14%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c-maybe) 40%, transparent); }
+.rc-banner > .i { color: var(--c-maybe); flex: none; }
+.rc-banner .grow { flex: 1; min-width: 0; }
+.rc-banner .help { font-size: 13px; margin-top: 2px; }
+.btn-pair { display: flex; gap: 6px; flex: none; }
+
+/* ---------- emoji reactions ---------- */
+.friends-actions { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); margin: 0 0 12px; }
+.react-e { font-size: 1.15em; line-height: 1; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font); }
+.btn .react-e { font-size: 18px; }
+.react-row { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; }
+.react-btn {
+  height: 42px; border: 0; border-radius: 12px; background: var(--surface-2); font-size: 22px; line-height: 1; display: grid; place-items: center;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font); transition: transform .12s var(--ease), background .12s;
+}
+.react-btn:hover { background: var(--surface-3); }
+.react-btn:active { transform: scale(.9); }
+.react-btn:disabled { opacity: .55; }
+.react-btn.small { width: 40px; height: 36px; font-size: 19px; }
+.react-btn.popped { animation: react-pop .45s var(--ease); }
+@keyframes react-pop { 30% { transform: scale(1.35) rotate(-8deg); } 60% { transform: scale(.95); } }
+.react-log { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 13.5px; color: var(--ink-2); }
+.react-log time { color: var(--ink-3); font-size: 12.5px; }
+
+/* arriving: a card at the top with quick replies */
+.react-card {
+  position: fixed; z-index: 61; top: calc(var(--safe-t) + 12px); left: 50%; translate: -50% 0; width: min(380px, calc(100vw - 20px));
+  display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 12px; border-radius: 18px;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-lift); border: 1px solid var(--line);
+  animation: react-in .32s var(--ease);
+}
+.react-card.leaving { opacity: 0; transform: translateY(-10px); transition: opacity .2s, transform .2s; }
+@keyframes react-in { from { transform: translateY(-16px) scale(.96); opacity: 0; } }
+.react-who { border: 0; padding: 0; background: none; border-radius: 50%; flex: none; }
+.react-who .avatar { width: 44px; height: 44px; font-size: 16px; }
+.react-main { flex: 1; min-width: 0; }
+.react-what { font-weight: 600; font-size: 15px; margin-bottom: 6px; }
+.react-what .react-e { font-size: 20px; vertical-align: -2px; }
+.react-count { color: var(--ink-3); font-weight: 600; font-size: 13px; }
+.react-replies { display: flex; gap: 6px; }
+.react-close { align-self: flex-start; color: var(--ink-3); }
+@media (min-width: 900px) { .react-card { left: calc(50% + 42px); } }
+
+/* the burst: a few of the emoji drift up the screen */
+.react-burst { position: fixed; inset: 0; z-index: 59; pointer-events: none; overflow: hidden; }
+.react-burst span {
+  position: absolute; bottom: -60px; font-size: calc(34px * var(--s, 1)); line-height: 1;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font);
+  animation: react-rise 2.1s cubic-bezier(.2, .7, .3, 1) var(--d, 0s) both;
+}
+@keyframes react-rise {
+  0% { transform: translate(0, 0) scale(.6); opacity: 0; }
+  15% { opacity: 1; }
+  100% { transform: translate(var(--x, 0), -70vh) scale(1.1); opacity: 0; }
+}
+/* and one pops up from their spot on the map */
+.reaction-pop-mk { pointer-events: none; z-index: 3; }
+.reaction-pop { display: block; font-size: 34px; line-height: 1; pointer-events: none; animation: map-pop 2.3s var(--ease) both; filter: drop-shadow(0 2px 4px rgba(0,0,0,.3));
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font); }
+@keyframes map-pop { 0% { transform: translateY(10px) scale(.3); opacity: 0; } 18% { transform: translateY(0) scale(1.2); opacity: 1; } 30% { transform: scale(1); } 75% { opacity: 1; } 100% { transform: translateY(-40px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .react-card, .react-btn.popped, .reaction-pop { animation: none; }
+  .react-burst { display: none; }
+}
+
 /* ---------- profile photos ---------- */
 .avatar { position: relative; overflow: hidden; }
 .avatar img, .friend-marker .bubble img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
@@ -857,3 +964,71 @@ label.btn { cursor: pointer; }
 .act-count { font-size: 13px; padding-top: 2px; padding-bottom: 6px; }
 .act-more { justify-content: center; gap: 8px; }
 .row.activity mark { background: color-mix(in srgb, var(--c-maybe) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
+
+/* ---------- phones held sideways ----------
+   Only ~390px of height: the bottom tab bar, two rows at the top and the day strip left almost no map.
+   Navigation becomes a slim icon rail on the left, search + friends + controls share one row along the
+   top, and cards dock beside the map instead of rising over it. Comes last so it also wins over the
+   wide-screen rules (a big phone sideways is over 900px wide). */
+@media (orientation: landscape) and (max-height: 520px) {
+  :root { --tab-h: 0px; --rail-w: calc(60px + var(--safe-l)); --top-w: min(330px, 40vw); }
+  .tabbar {
+    top: 0; bottom: 0; right: auto; width: var(--rail-w); height: auto; flex-direction: column; justify-content: flex-start;
+    padding: calc(var(--safe-t) + 8px) 0 calc(var(--safe-b) + 4px) var(--safe-l); border-top: 0; border-right: 1px solid var(--line);
+  }
+  .tab { flex: 0 0 54px; gap: 2px; font-size: 10px; }
+  .tab .i { width: 22px; height: 22px; }
+  .tab[aria-current="page"]::before { top: 20%; bottom: 20%; left: 0; right: auto; width: 3px; height: auto; border-radius: 0 3px 3px 0; }
+  .tab.collapse { margin-top: auto; flex: 0 0 44px; transform: rotate(90deg); }
+  .tab[data-tab="notifications"] { display: none; }
+  .app { padding-left: var(--rail-w); transition: padding .3s var(--ease); }
+  .app.nav-collapsed { padding-left: 0; }
+  .app.nav-collapsed .tabbar { transform: translateX(-110%); }
+  .nav-handle { left: calc(var(--safe-l) + 8px); transform: none; bottom: calc(var(--safe-b) + 8px); height: 36px; }
+
+  /* the map: one row along the top */
+  .map-top { top: calc(var(--safe-t) + 8px); left: 8px; right: auto; width: var(--top-w); max-width: none; gap: 6px; }
+  .app.nav-collapsed .map-top { left: calc(var(--safe-l) + 8px); }
+  .me-btn { width: 40px; height: 40px; }
+  .me-btn .avatar { width: 32px; height: 32px; font-size: 13px; }
+  .search { height: 40px; }
+  .search input { height: 38px; }
+  .search-results { top: calc(var(--safe-t) + 54px); left: 8px; right: auto; width: min(420px, 60vw); max-width: none; max-height: calc(100dvh - var(--safe-t) - 66px); }
+  .friend-row { top: calc(var(--safe-t) + 5px); left: calc(var(--top-w) + 12px); right: calc(var(--safe-r) + 58px); padding: 4px 4px 8px; }
+  .app.nav-collapsed .friend-row { left: calc(var(--top-w) + var(--safe-l) + 12px); }
+  .friend-chip { height: 32px; }
+  .map-controls { top: calc(var(--safe-t) + 8px); right: calc(var(--safe-r) + 8px); }
+  .ctl { width: 40px; height: 40px; }
+  .layers-pop { top: calc(var(--safe-t) + 8px); right: calc(var(--safe-r) + 56px); max-height: calc(100dvh - 24px); overflow-y: auto; }
+  .follow-chip { top: calc(var(--safe-t) + 54px); left: auto; right: calc(var(--safe-r) + 56px); translate: none; }
+  .fab { right: calc(var(--safe-r) + 10px); bottom: calc(var(--safe-b) + 10px); width: 46px; height: 46px; border-radius: 15px; }
+  .fab .i { width: 22px; height: 22px; }
+  .app.nav-collapsed .fab { bottom: calc(var(--safe-b) + 10px); }
+  .line-strip { left: 8px; right: auto; width: min(460px, 56vw); bottom: calc(var(--safe-b) + 8px); padding: 6px 4px 8px; }
+  .app.nav-collapsed .line-strip { left: calc(var(--safe-l) + 130px); bottom: calc(var(--safe-b) + 8px); width: min(460px, calc(100vw - 210px)); }
+  .rail { margin-top: 4px; height: 34px; }
+  .strip-empty { padding-top: 4px; }
+  .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 4px); }
+  .maplibregl-ctrl-bottom-right, .app.nav-collapsed .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-b) + 60px); right: var(--safe-r); }
+
+  /* cards dock beside the map: a friend or place card on the left under the top row (so the
+     controls stay usable), anything else as a panel on the right */
+  .sheet {
+    left: auto; right: calc(var(--safe-r) + 8px); bottom: calc(var(--safe-b) + 8px); width: min(440px, 62vw);
+    max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 16px); border-radius: var(--r-l); padding-bottom: 0;
+  }
+  .sheet.peek {
+    left: calc(var(--rail-w) + 8px); right: auto; top: calc(var(--safe-t) + 54px); bottom: auto; width: min(380px, 46vw);
+    max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 62px);
+  }
+  .app.nav-collapsed ~ #sheet-root .sheet.peek { left: calc(var(--safe-l) + 8px); }
+  .sheet.tall, .sheet.friend-sheet { max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 16px); }
+  .sheet.peek.friend-sheet, .sheet.peek.tall { max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 62px); }
+  .sheet-grab { height: 10px; }
+  .sheet-grab::before { display: none; }
+  .sheet-head h2 { font-size: 18px; }
+
+  /* pages: centred, readable width */
+  .page { padding-top: calc(var(--safe-t) + 6px); }
+  .screen-page > .page { max-width: 760px; margin: 0 auto; padding-right: var(--safe-r); }
+}

@@ -60,8 +60,13 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const RC_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
   const newRecoveryCode = () => [...crypto.randomBytes(16)].map((b) => RC_ALPHABET[b % 32]).join('').match(/.{4}/g).join('-');
   const normRecoveryCode = (c) => String(c || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0').replace(/[IL]/g, '1');
-  const recoveryInfo = (u) => ({ set: !!u.recovery_hash, setAt: u.recovery_set_at || null, snoozeUntil: u.recovery_snooze || null });
+  // none: no code. pending: a code exists and can still be viewed, not yet confirmed as saved.
+  // unconfirmed: made before 1.6 (no confirmation then). saved: confirmed, only the hash is kept.
+  const recoveryStatus = (u) => (!u.recovery_hash ? 'none' : u.recovery_pending ? 'pending' : u.recovery_ack_at ? 'saved' : 'unconfirmed');
+  const recoveryInfo = (u) => ({ status: recoveryStatus(u), set: recoveryStatus(u) === 'saved', setAt: u.recovery_set_at || null, savedAt: u.recovery_ack_at || null, snoozeUntil: u.recovery_snooze || null });
+  const pushRecovery = (id) => { const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id); for (const c of clients) if (c.user.id === id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(u) }); };
   const recoverFails = new Map(); // user id -> { n, ts }: wrong recovery codes, per account
+  const clientLogCount = new Map(); // user id -> browser errors reported since start (capped)
   const helpAsked = new Map();    // user id -> time admins were last asked
   const getSetting = (key, fallback) => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(key); return r ? JSON.parse(r.value) : fallback; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
@@ -133,6 +138,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     return { count: ids.length };
   }
 
+  // Reactions people can send each other. Kept short so the row fits on a phone.
+  const REACTIONS = ['👋', '❤️', '😂', '🎉', '🙏', '👍', '😮', '🍻'];
+  const recentReactions = (uid) => db.prepare('SELECT * FROM reactions WHERE from_id = ? OR to_id = ? ORDER BY id DESC LIMIT 60').all(uid, uid)
+    .map((r) => ({ id: r.id, from: r.from_id, to: r.to_id, emoji: r.emoji, ts: r.ts }));
+
   // ---------- accounts ----------
   function kickUser(id) {
     for (const c of clients) if (c.user.id === id) { sendTo(c, { t: 'kicked' }); c.ws.close(); }
@@ -179,6 +189,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const publicUser = (u) => ({
     id: u.id, name: u.name, color: u.color, isAdmin: !!u.is_admin, shareLocation: !!u.share_location, avatar: u.avatar ? `/api/avatars/${u.avatar}` : null,
     hasRecovery: !!u.recovery_hash,
+    recoverySaved: !!u.recovery_hash && !u.recovery_pending && !!u.recovery_ack_at,
     ...(u.removed_at ? { removed: true, removedAt: u.removed_at } : {}),
   });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
@@ -255,8 +266,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       online: onlineIds(),
       activity: recentActivity(),
       notifications: notifier.list(me.id),
+      reactions: recentReactions(me.id),
       unread: notifier.unread(me.id),
-      config: { ...CONFIG, version: VERSION, build: BUILD, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
+      config: { ...CONFIG, version: VERSION, build: BUILD, reactions: REACTIONS, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -561,7 +573,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         recoverFails.delete(u.id);
         // The code is used up: set the new password and hand out a fresh code straight away.
         const code = newRecoveryCode();
-        db.prepare('UPDATE users SET pass_hash = ?, recovery_hash = ?, recovery_set_at = ? WHERE id = ?').run(hashPassword(b.password), hashPassword(normRecoveryCode(code)), now(), u.id);
+        db.prepare('UPDATE users SET pass_hash = ?, recovery_hash = ?, recovery_set_at = ?, recovery_pending = ?, recovery_ack_at = NULL WHERE id = ?').run(hashPassword(b.password), hashPassword(normRecoveryCode(code)), now(), code, u.id);
         auth.revokeUser(u.id);
         kickUser(u.id);
         addCookie(res, auth.create(req, u.id).setCookie);
@@ -663,6 +675,20 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           .all(...(q ? [before, like, limit + 1] : [before, limit + 1]));
         const total = q ? db.prepare("SELECT COUNT(*) n FROM activity WHERE text LIKE ? ESCAPE '\\'").get(like).n : null;
         return send(res, 200, { items: rows.slice(0, limit).map((a) => ({ id: a.id, ts: a.ts, userId: a.user_id, text: a.text })), more: rows.length > limit, total });
+      }
+      // Confirm the recovery code was saved (used by the "You're back in" screen, before the app connects)
+      if (p === '/api/recovery/ack' && req.method === 'POST') {
+        if (user.recovery_hash) db.prepare('UPDATE users SET recovery_pending = NULL, recovery_ack_at = ? WHERE id = ?').run(now(), user.id);
+        pushRecovery(user.id);
+        return send(res, 200, { ok: true });
+      }
+      // Errors from people's browsers, so they show up in the developer console
+      if (p === '/api/clientlog' && req.method === 'POST') {
+        const b = await readBody(req).catch(() => ({}));
+        const n = (clientLogCount.get(user.id) || 0) + 1;
+        clientLogCount.set(user.id, n);
+        if (n <= 30) devPush('client', { user: user.name, msg: String(b.msg || '').slice(0, 400), where: String(b.where || '').slice(0, 200), ua: String(req.headers['user-agent'] || '').slice(0, 160), build: String(b.build || '').slice(0, 30), screen: String(b.screen || '').slice(0, 40) });
+        return send(res, 200, { ok: true });
       }
       if (p === '/api/sessions' && req.method === 'GET') return send(res, 200, { sessions: auth.list(user.id, session.hash) });
       if (p === '/api/logout-others' && req.method === 'POST') {
@@ -1413,16 +1439,51 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return { ok: true, ...link };
       }
 
+      // ---- emoji reactions between people ----
+      case 'react.send': {
+        const emoji = String(d.emoji || '');
+        if (!REACTIONS.includes(emoji)) fail('Pick one of the reaction emoji.');
+        const targets = d.to === 'all'
+          ? db.prepare('SELECT * FROM users WHERE removed_at IS NULL AND id != ?').all(user.id)
+          : [db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+d.to)].filter(Boolean);
+        if (!targets.length || targets.some((t) => t.id === user.id)) fail('Choose someone on the trip.');
+        const recent = db.prepare('SELECT COUNT(*) n FROM reactions WHERE from_id = ? AND ts > ?').get(user.id, now() - 60e3).n;
+        if (recent + targets.length > 40) fail('That’s a lot of reactions. Try again in a minute.');
+        const ts = now();
+        const out = targets.map((t) => {
+          const id = Number(db.prepare('INSERT INTO reactions(from_id, to_id, emoji, ts) VALUES(?, ?, ?, ?)').run(user.id, t.id, emoji, ts).lastInsertRowid);
+          return { id, from: user.id, to: t.id, emoji, ts };
+        });
+        db.prepare('DELETE FROM reactions WHERE id <= (SELECT id FROM reactions ORDER BY id DESC LIMIT 1 OFFSET 5000)').run();
+        for (const r of out) for (const c of clients) if (c.user.id === r.to || c.user.id === user.id) sendTo(c, { t: 'reaction', r, all: d.to === 'all' });
+        notifier.notify(out.map((r) => ({ userId: r.to, kinds: ['reactions'], merge: 'count',
+          text: (k) => (d.to === 'all' ? `${user.name} sent everyone ${emoji}` : k > 1 ? `${user.name} sent you ${emoji} (${k} reactions)` : `${user.name} sent you ${emoji}`) })),
+        { actorId: user.id, ref: { type: 'reaction', id: user.id } });
+        return { ok: true, sent: out.length };
+      }
+
       // ---- account recovery code ----
       case 'recovery.setup': {
         const code = newRecoveryCode();
         const had = !!user.recovery_hash;
-        db.prepare('UPDATE users SET recovery_hash = ?, recovery_set_at = ?, recovery_snooze = NULL WHERE id = ?').run(hashPassword(normRecoveryCode(code)), now(), user.id);
-        const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
-        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(fresh) });
+        // Works straight away, and stays viewable in Settings until confirmed as saved
+        db.prepare('UPDATE users SET recovery_hash = ?, recovery_set_at = ?, recovery_snooze = NULL, recovery_pending = ?, recovery_ack_at = NULL WHERE id = ?').run(hashPassword(normRecoveryCode(code)), now(), code, user.id);
+        pushRecovery(user.id);
         if (had) notifier.notify([{ userId: user.id, kinds: ['security'], text: 'A new recovery code was made for your account. The old one no longer works.' }], { ref: { type: 'account', id: user.id } });
         devPush('op', { user: user.name, op: 'recovery.setup', ok: true, replaced: had });
         return { ok: true, code };
+      }
+      case 'recovery.view': {
+        const u = db.prepare('SELECT recovery_pending FROM users WHERE id = ?').get(user.id);
+        if (!u.recovery_pending) fail('Your recovery code was saved and hidden. If you’ve lost it, make a new one.');
+        return { ok: true, code: u.recovery_pending };
+      }
+      case 'recovery.ack': {
+        if (!user.recovery_hash) fail('Set up a recovery code first.');
+        db.prepare('UPDATE users SET recovery_pending = NULL, recovery_ack_at = ? WHERE id = ?').run(now(), user.id);
+        pushRecovery(user.id);
+        devPush('op', { user: user.name, op: 'recovery.ack', ok: true });
+        return { ok: true };
       }
       case 'recovery.snooze': {
         db.prepare('UPDATE users SET recovery_snooze = ? WHERE id = ?').run(now() + 3 * 864e5, user.id);
@@ -1462,6 +1523,21 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const n = notifier.markRead(user.id, Array.isArray(d.ids) ? d.ids : undefined);
         notifyUnread(user.id);
         return { ok: true, unread: n };
+      }
+      case 'notif.dismiss': {
+        const ids = (Array.isArray(d.ids) ? d.ids : []).map(Number).filter(Number.isFinite).slice(0, 500);
+        notifier.dismiss(user.id, ids);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'notif.gone', ids }); // their other phones/tabs too
+        notifyUnread(user.id);
+        return { ok: true, unread: notifier.unread(user.id) };
+      }
+      case 'notif.clearAll': {
+        notifier.clearAll(user.id);
+        for (const c of clients) if (c.user.id === user.id) sendTo(c, { t: 'notif.reset', notifications: [], unread: 0 });
+        return { ok: true };
+      }
+      case 'notif.older': {
+        return { ok: true, notifications: notifier.older(user.id, +d.before || Number.MAX_SAFE_INTEGER, Math.min(+d.limit || 40, 100)) };
       }
       case 'notif.clear': {
         notifier.clear(user.id);
@@ -1572,7 +1648,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
       return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
         id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
-        removedAt: u.removed_at || null, recoverySet: !!u.recovery_hash, hasPassword: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(u.pass_hash),
+        removedAt: u.removed_at || null, recoverySet: !!u.recovery_hash, recoveryStatus: recoveryStatus(u), hasPassword: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(u.pass_hash),
         resetLink: db.prepare('SELECT created_at, expires_at FROM password_resets WHERE user_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1').get(u.id, now()) || null,
         owntracksConfigured: !!u.owntracks_token, lastOwnTracks: lastOt[u.id] ? { ts: lastOt[u.id].ts, result: lastOt[u.id].result } : null,
         location: locs[u.id] ? { lat: locs[u.id].lat, lng: locs[u.id].lng, acc: locs[u.id].acc, batt: locs[u.id].batt, ts: locs[u.id].ts, source: locs[u.id].source } : null,

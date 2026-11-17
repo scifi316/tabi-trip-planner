@@ -11,7 +11,7 @@ import { getMap } from './map.js';
 import { prefsHtml, bindPrefs } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
 import { ownTracksBadge } from './owntracks.js';
-import { openRecoverySetup, openResetLink } from './account.js';
+import { recoveryAction, recoveryStatus, openRecoverySetup, openResetLink } from './account.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -31,6 +31,37 @@ setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 const sw = (attr, checked, label) => `<label class="switch"><input type="checkbox" ${attr} ${checked ? 'checked' : ''} aria-label="${esc(label)}"><span></span></label>`;
 const seg = (name, value, opts) => `<div class="seg" role="group">${opts.map(([v, l]) => `<button data-${name}="${v}" aria-pressed="${value === v}">${esc(l)}</button>`).join('')}</div>`;
 
+// ---------- account recovery: what the row says, by state ----------
+function recoveryHelp(me) {
+  const r = me.recovery || {};
+  switch (recoveryStatus()) {
+    case 'saved': return `Recovery code saved ${ago(r.savedAt || r.setAt)}. If you forget your password, use it on the sign-in screen.`;
+    case 'pending': return 'Your code is ready and already works. View it, save it somewhere safe, then hide it.';
+    case 'unconfirmed': return `Made ${ago(r.setAt)}. Did you save it? If not, make a new one.`;
+    default: return 'Not set up. If you forget your password, a trip admin will have to send you a reset link.';
+  }
+}
+function recoveryButtons() {
+  switch (recoveryStatus()) {
+    case 'saved': return '<button class="btn small" data-recovery>New code</button>';
+    case 'pending': return '<button class="btn small primary" data-recovery>View code</button>';
+    case 'unconfirmed': return '<div class="btn-pair"><button class="btn small" data-recovery-new>New code</button><button class="btn small primary" data-recovery>I saved it</button></div>';
+    default: return '<button class="btn small primary" data-recovery>Set up</button>';
+  }
+}
+// A reminder at the top of Settings until the code is saved
+function recoveryBanner() {
+  const st = recoveryStatus();
+  if (st === 'saved' || !state.me?.recovery) return '';
+  const [title, text, btn] = st === 'pending'
+    ? ['Save your recovery code', 'It’s ready, but you haven’t confirmed saving it. It stays here until you do.', 'View code']
+    : st === 'unconfirmed'
+      ? ['Did you save your recovery code?', 'Tell us you have it, or make a new one.', 'Check']
+      : ['Protect your account', 'A recovery code lets you reset a forgotten password yourself.', 'Set up'];
+  return `<div class="rc-banner" role="note">${icon('lock')}<div class="grow"><b>${esc(title)}</b><div class="help">${esc(text)}</div></div>
+    <button class="btn small primary" data-recovery>${esc(btn)}</button></div>`;
+}
+
 export function render() {
   const el = root();
   const me = state.me || {};
@@ -47,6 +78,7 @@ export function render() {
     <header class="page-head">${meButton()}<div class="grow"><h1>Settings</h1>
       <div class="sub">${state.conn === 'online' ? 'Connected' : state.conn === 'connecting' ? 'Connecting…' : 'Offline'}${pending ? `, ${pending} change${pending > 1 ? 's' : ''} waiting to sync` : ''}</div></div></header>
 
+    ${recoveryBanner()}
     <section class="section"><h2>You</h2><div class="card">
       <div class="row"><button class="photo-btn" data-photo aria-label="Change your profile photo">${avatar(me, 'big')}<span class="photo-cam">${icon('camera', 'small')}</span></button>
         <div class="grow"><div class="label">${esc(me.name)}</div><div class="help">${admin ? 'Trip admin' : 'Member'}</div></div>
@@ -56,10 +88,8 @@ export function render() {
       <div class="row stack"><div class="label">Your colour</div>
         <div class="colors" style="margin-top:8px">${COLORS.map((c) => `<button class="color-dot" style="--c:${c}" data-color="${c}" aria-label="Colour ${c}" aria-pressed="${me.color === c}"></button>`).join('')}</div></div>
       <div class="row"><div class="grow label">Password</div><button class="btn small" data-password>Change</button></div>
-      <div class="row"><div class="grow"><div class="label">Account recovery</div><div class="help">${me.recovery?.set
-        ? `Recovery code saved ${ago(me.recovery.setAt)}. If you forget your password, use it on the sign-in screen.`
-        : 'Not set up. If you forget your password, a trip admin will have to send you a reset link.'}</div></div>
-        <button class="btn small ${me.recovery?.set ? '' : 'primary'}" data-recovery>${me.recovery?.set ? 'New code' : 'Set up'}</button></div>
+      <div class="row" data-section="recovery"><div class="grow"><div class="label">Account recovery</div><div class="help">${recoveryHelp(me)}</div></div>
+        ${recoveryButtons()}</div>
       <div class="row"><div class="grow"><div class="label">Signed-in devices</div><div class="help">See where you’re signed in, and sign out the others.</div></div><button class="btn small" data-devices>Devices</button></div>
       <div class="row"><div class="grow label">Sign out of this device</div><button class="btn small danger" data-signout>Sign out</button></div>
       <div class="row"><div class="grow"><div class="label">Leave the trip</div><div class="help">Your expenses and balances stay, so everyone’s totals remain right.</div></div>
@@ -139,7 +169,7 @@ export function render() {
         <button class="btn small" data-subgroups>${icon('users')}Manage</button></div>
       ${state.users.map((u) => `
         <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
-          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${admin && !u.hasRecovery ? ', no recovery code' : ''}</div></div>
+          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${admin && !u.hasRecovery ? ', no recovery code' : admin && u.recoverySaved === false ? ', recovery code not saved yet' : ''}</div></div>
           ${u.isAdmin ? '<span class="tag">Admin</span>' : ''}
           ${admin && u.id !== me.id ? `<button class="btn small" data-member="${u.id}">Manage</button>` : ''}
         </div>`).join('')}
@@ -198,7 +228,8 @@ function bind(el) {
   q.oninput = onActivitySearch;
   q.onkeydown = (e) => { if (e.key === 'Escape' && q.value) { q.value = ''; onActivitySearch({ target: q }); } };
   renderActivityList();
-  el.querySelector('[data-recovery]').onclick = () => openRecoverySetup({ replacing: !!me.recovery?.set });
+  el.querySelectorAll('[data-recovery]').forEach((b) => b.onclick = () => recoveryAction());
+  el.querySelector('[data-recovery-new]')?.addEventListener('click', () => openRecoverySetup({ replacing: true }));
   el.querySelector('[data-leave]').onclick = leaveSheet;
   el.querySelectorAll('[data-merge]').forEach((b) => b.onclick = () => mergeSheet(userById(+b.dataset.merge)));
   el.querySelectorAll('[data-bring-back]').forEach((b) => b.onclick = async () => {
