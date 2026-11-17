@@ -29,6 +29,11 @@ const TOURS = {
     { sel: '#tabbar [data-tab=notifications]', title: 'New: notifications page', text: 'Everything that changed for you, by day. Dismiss one with ×, or clear them all.' },
     { sel: '#screen-map [data-me-btn]', title: 'Clear your notifications', text: 'Tap your picture to read them. Each one now has × to dismiss it, and there’s Clear all.' },
   ],
+  'new-1.7': [
+    { sel: '#friend-row .home-chip', title: 'New: where we’re staying', text: 'Add your hotel or Airbnb by address or a map link. It shows as a house, and “Home” always takes you to tonight’s, with directions back.' },
+    { sel: '#line-strip [data-day-photos]', title: 'New: picture a day', text: 'Anyone can add the day’s photo, up to 5 a day. The most liked one becomes the day’s cover, and the whole album downloads in one go.' },
+    { sel: '#screen-map [data-me-btn]', title: 'New: notifications when Tabi is closed', text: 'Turn them on for this phone in your account or Settings, and they reach your lock screen. On iPhone, add Tabi to your Home Screen first.' },
+  ],
   money: [
     { sel: '#screen-money .money-summary', title: 'Who owes whom', text: 'Your running total, plus exactly what you owe each person or what they owe you. Record a payment when someone pays you back.' },
     { sel: '#screen-money [data-add]', title: 'Add an expense', text: 'Snap the receipt and tap “Read receipt” to fill in the total and items. Split equally, by exact amounts, by shares, or item by item.' },
@@ -45,7 +50,7 @@ let active = null;
 export function tourDone(screen) { return localStorage.getItem(KEY + screen) === 'done'; }
 export function resetTours() { Object.keys(TOURS).forEach((s) => localStorage.removeItem(KEY + s)); }
 function finish(screen, all = false) {
-  (all ? Object.keys(TOURS) : screen === 'map' ? ['map', 'new-1.3', 'new-1.6'] : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
+  (all ? Object.keys(TOURS) : screen === 'map' ? ['map', 'new-1.3', 'new-1.6', 'new-1.7'] : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
   active?.el.remove();
   removeEventListener('resize', place);
   active = null;
@@ -55,10 +60,11 @@ function finish(screen, all = false) {
 let lastTouch = 0;
 addEventListener('pointerdown', () => { lastTouch = Date.now(); }, true);
 
-const SCREEN_OF = { 'new-1.3': 'map', 'new-1.6': 'map' };
+const SCREEN_OF = { 'new-1.3': 'map', 'new-1.6': 'map', 'new-1.7': 'map' };
 export function maybeStartTour(screen, { delay = 700, force = false } = {}) {
   if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.3')) screen = 'new-1.3';
   else if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.6')) screen = 'new-1.6';
+  else if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.7')) screen = 'new-1.7';
   if (!TOURS[screen] || (!force && tourDone(screen))) return;
   const openedAt = Date.now();
   setTimeout(() => {

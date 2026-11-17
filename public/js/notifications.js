@@ -2,6 +2,7 @@
 // and the per-person switches shown in Settings.
 import { state, on, op, emit, userById } from './store.js';
 import { esc, icon, avatar, ago, toast, confirmSheet, fmtDay } from './ui.js';
+import { withEmojis } from './emoji.js';
 
 export const KINDS = {
   groups: { label: 'Subgroups', help: 'You’re added to or taken out of a subgroup, or one you’re in changes or ends.', icon: 'users' },
@@ -13,6 +14,7 @@ export const KINDS = {
   newPlaces: { label: 'New places', help: 'Anyone adds or imports places. Off to start with, because it gets busy while you’re planning.', icon: 'plus' },
   removed: { label: 'Removed places', help: 'Someone removes a place, so you can bring it back from Previously interested. Admins only.', icon: 'trash', admin: true },
   help: { label: 'Sign-in help', help: 'Someone who forgot their password asks for a reset link. Admins only.', icon: 'lock', admin: true },
+  photos: { label: 'Picture a day', help: 'Someone adds a photo of the day, and an evening reminder if the day has none yet.', icon: 'camera' },
   reactions: { label: 'Waves and reactions', help: 'Someone sends you a 👋 or another emoji. Turning this off also stops them popping up on screen.', icon: 'smile' },
   // Always on: changes to your own password or recovery code. Not a switch.
   security: { label: 'Your account', icon: 'lock', locked: true },
@@ -80,7 +82,7 @@ const itemHtml = (n, fresh) => {
   return `<div class="notif-item" data-item="${n.id}">
     <button class="notif ${fresh.has(n.id) ? 'unread' : ''}" data-notif="${n.id}">
       <span class="notif-av">${who ? avatar(who) : `<span class="avatar notif-sys">${icon(k.icon, 'small')}</span>`}<span class="notif-kind">${icon(k.icon, 'small')}</span></span>
-      <span class="notif-main"><span class="notif-text">${esc(n.text)}</span><time>${ago(n.ts)}</time></span></button>
+      <span class="notif-main"><span class="notif-text">${withEmojis(n.text)}</span><time>${ago(n.ts)}</time></span></button>
     <button class="icon-btn small notif-x" data-dismiss="${n.id}" aria-label="Dismiss this notification" data-tip="Dismiss">${icon('x', 'small')}</button>
   </div>`;
 };
@@ -137,6 +139,11 @@ export async function openTarget(n) {
     (await import('./account.js')).openResetLink(userById(ref.id));
   } else if (ref.type === 'account') {
     await emit('go', 'settings');
+  } else if (ref.type === 'stay' && ref.id) {
+    emit('go', 'map');
+    (await import('./stays.js')).openStay(String(ref.id));
+  } else if (ref.type === 'photos' && ref.id) {
+    (await import('./photos.js')).openDayPhotos(String(ref.id));
   } else if (ref.type === 'reaction' && userById(ref.id) && +ref.id !== state.me?.id) {
     emit('go', 'map');
     (await import('./friends.js')).openFriend(+ref.id, { pinpoint: true });

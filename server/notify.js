@@ -12,6 +12,7 @@ export const NOTIFY_KINDS = {
   removed: { default: true, admin: true }, // someone removes a place (it goes to Previously interested)
   help: { default: true, admin: true },    // someone can't sign in and asks for a password reset link
   reactions: { default: true },            // someone sends you an emoji (👋)
+  photos: { default: true },               // picture a day: someone adds one, or the evening reminder
   // Always on, not shown in Settings: changes to your own account's password or recovery code.
   security: { default: true, locked: true },
 };
@@ -93,7 +94,13 @@ export function createNotifier({ db, deliver, now = Date.now }) {
     const st = db.prepare('DELETE FROM notifications WHERE user_id = ? AND id = ?');
     for (const id of ids.slice(0, 500)) st.run(userId, +id);
   }
-  const older = (userId, before, limit = 40) => db.prepare('SELECT * FROM notifications WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?').all(userId, before, limit).map(rowOut);
+  // Paging back through the list. The list is ordered by time, and a notification that's updated
+  // (repeats merged into it) keeps its id but moves to the top, so the cursor is (time, id).
+  const older = (userId, before, limit = 40) => (typeof before === 'object' && before
+    ? db.prepare(`SELECT * FROM notifications WHERE user_id = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+        ORDER BY created_at DESC, id DESC LIMIT ?`).all(userId, before.ts, before.ts, before.id, limit)
+    : db.prepare('SELECT * FROM notifications WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?').all(userId, before, limit) // apps from 1.6
+  ).map(rowOut);
   const purgeOld = () => db.prepare('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?').run(now() - 45 * 864e5);
 
   return { notify, list, unread, markRead, clear, clearAll, dismiss, older, purgeOld };

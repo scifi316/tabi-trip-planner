@@ -5,6 +5,7 @@
 //                database and runs the Cloudflare Tunnel connector, so the tunnel always points
 //                at exactly one live copy of the app.
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
@@ -26,6 +27,30 @@ const NODE = env.HA_NODE || os.hostname();
 const PRIORITY = env.HA_PRIORITY === 'backup' ? 'backup' : 'primary';
 const HA_ON = /^(1|true|on|yes)$/i.test(env.HA_MODE || '');
 const log = (...a) => console.log(new Date().toISOString(), ...a);
+const VERSION = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version; } catch { return '?'; } })();
+
+// Each server notes its version in storage every couple of minutes, so the developer console (and
+// the log) can say when the backup is still running older code. A backup that takes over while out
+// of date serves the old app to whoever opens it then, which looks like "the update didn't arrive".
+let servers = {};
+let heartbeatRole = 'starting';
+let warnedAbout = '';
+async function heartbeat() {
+  if (!s3) return;
+  try {
+    for (let i = 0; i < 2; i++) {
+      const r = await s3.get('nodes.json', { timeout: 5000 });
+      const cur = (() => { try { return r ? JSON.parse(r.body) : {}; } catch { return {}; } })();
+      cur[NODE] = { version: VERSION, priority: PRIORITY, role: heartbeatRole, at: Date.now() };
+      const w = await s3.put('nodes.json', JSON.stringify(cur), { contentType: 'application/json', timeout: 5000, ...(r ? { ifMatch: r.etag } : { ifNoneMatch: true }) });
+      if (w.ok) { servers = cur; break; }
+    }
+    const behind = Object.entries(servers).filter(([n, s]) => n !== NODE && Date.now() - s.at < 15 * 60e3 && s.version !== VERSION);
+    const key = behind.map(([n, s]) => n + s.version).join();
+    if (key && key !== warnedAbout) log(`[ha] version mismatch: ${behind.map(([n, s]) => `${n} runs ${s.version}`).join(', ')}; this server (${NODE}) runs ${VERSION}. Run deploy/update.sh on every server.`);
+    warnedAbout = key;
+  } catch { /* storage unreachable: the lease code reports that */ }
+}
 
 let s3;
 try { s3 = s3FromEnv(env); } catch (e) { console.error(`Storage settings problem: ${e.message}`); process.exit(1); }
@@ -82,6 +107,7 @@ process.on('SIGTERM', () => shutdown(0, 'SIGTERM'));
 process.on('SIGINT', () => shutdown(0, 'SIGINT'));
 
 async function main() {
+  if (s3) { heartbeatRole = HA_ON ? 'standby' : 'single'; heartbeat(); setInterval(heartbeat, 120e3).unref(); }
   if (HA_ON) {
     ha = createHA({ s3, dataDir: DATA_DIR, node: NODE, priority: PRIORITY, env, log });
     log(`[ha] ${NODE} (${PRIORITY}) waiting for the lease`);
@@ -93,7 +119,8 @@ async function main() {
 
   db = openDb(DATA_DIR);
   const blobs = createBlobStore(DATA_DIR, s3);
-  app = createApp({ db, blobs, root: ROOT, dataDir: DATA_DIR, env, getHealth: () => (ha ? ha.status() : { role: 'single', node: NODE }) });
+  if (HA_ON) { heartbeatRole = 'leader'; heartbeat(); }
+  app = createApp({ db, blobs, root: ROOT, dataDir: DATA_DIR, env, getHealth: () => ({ ...(ha ? ha.status() : { role: 'single', node: NODE }), version: VERSION, servers }) });
   await new Promise((r) => app.server.listen(PORT, r));
   log(`Tabi is running on http://localhost:${PORT} (data: ${DATA_DIR}${HA_ON ? `, ${NODE} is leader` : ''})`);
   if (app.userCount() === 0) log('No trip yet: open the app in a browser to create it.');

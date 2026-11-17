@@ -217,7 +217,8 @@ export function forgotScreen(el, { tripName, name = '', back }) {
       newCodeScreen(el, { name: data.name, code: r.code });
     } catch (ex) { err.hidden = false; err.textContent = ex.message; btn.disabled = false; }
   };
-  setTimeout(() => (name ? form.code : form.name).focus(), 50);
+  // Only if you haven't already started typing somewhere (focus jumping mid-word put text in the wrong box)
+  setTimeout(() => { if (!form.contains(document.activeElement)) (name ? form.code : form.name).focus(); }, 50);
 }
 
 // After recovering with a code: the old one is used up, so show the new one before going in.
@@ -270,7 +271,7 @@ export async function resetScreen(el, token) {
       location.replace('/'); // signed in; the app then asks them to set up a recovery code
     } catch (ex) { err.hidden = false; err.textContent = ex.message; btn.disabled = false; }
   };
-  setTimeout(() => form.password.focus(), 50);
+  setTimeout(() => { if (!form.contains(document.activeElement)) form.password.focus(); }, 50);
 }
 
 // ---------- admins: make a reset link for someone ----------

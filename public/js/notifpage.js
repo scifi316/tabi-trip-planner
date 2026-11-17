@@ -9,6 +9,7 @@ let filter = 'all';
 let older = [];          // fetched on demand, not kept in state
 let olderDone = false;
 let loading = false;
+let lastHtml = '';
 
 const root = () => $('#screen-notifications');
 const isOpen = () => root() && !root().hidden;
@@ -21,7 +22,7 @@ function render() {
   const list = filter === 'unread' ? all.filter((n) => !n.read) : all;
   const fresh = new Set(all.filter((n) => !n.read).map((n) => n.id));
   const scroll = el.scrollTop;
-  el.innerHTML = `
+  const html = `
   <div class="page notif-page">
     <header class="page-head">${meButton()}<div class="grow"><h1>Notifications</h1>
       <div class="sub">${unreadN ? `${unreadN} unread` : 'You’re all caught up'}</div></div>
@@ -44,6 +45,11 @@ function render() {
     ${filter === 'all' && all.length && !olderDone ? `<button class="btn block notif-older" data-older ${loading ? 'disabled' : ''}>${loading ? 'Loading…' : 'Show older'}</button>` : ''}
     ${filter === 'all' && olderDone && all.length > 8 ? `<p class="hint notif-end">That’s everything. Notifications you’ve read are removed after 45 days.</p>` : ''}
   </div>`;
+  // Nothing visible changed (an event that doesn't affect this list): leave the page alone, so a tap
+  // that's in progress isn't lost to a button being swapped for an identical one.
+  if (html === lastHtml && el.firstElementChild) return;
+  lastHtml = html;
+  el.innerHTML = html;
   el.scrollTop = scroll;
   el.querySelectorAll('[data-filter]').forEach((b) => b.onclick = () => { filter = b.dataset.filter; render(); });
   el.querySelector('[data-read-all]').onclick = () => { older.forEach((n) => { n.read = true; }); markAllRead(); };
@@ -63,9 +69,10 @@ function render() {
 async function loadOlder() {
   if (loading) return;
   loading = true; render();
+  // The oldest one shown (by time, then id): the server continues from there
   const all = [...state.notifications, ...older];
-  const before = all.length ? Math.min(...all.map((n) => n.id)) : Number.MAX_SAFE_INTEGER;
-  const r = await op('notif.older', { before, limit: 40 });
+  const last = all.reduce((a, n) => (!a || n.ts < a.ts || (n.ts === a.ts && n.id < a.id) ? n : a), null);
+  const r = await op('notif.older', last ? { beforeTs: last.ts, beforeId: last.id, limit: 40 } : { limit: 40 });
   loading = false;
   if (r?.ok === false) { toast(r.error); render(); return; }
   const got = r?.notifications || [];
@@ -76,6 +83,7 @@ async function loadOlder() {
 
 export function showNotifications() {
   filter = 'all';
+  lastHtml = '';
   render();
 }
 

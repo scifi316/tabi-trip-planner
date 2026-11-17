@@ -4,6 +4,8 @@ import { maybeStartTour } from './tour.js';
 import { $, $$, esc, icon, avatar, toast, openSheet, closeAllSheets, closePeekSheets } from './ui.js';
 import { listHtml, bindList, markAllRead, unreadCount, clearNotifToasts, clearAll, wideScreen } from './notifications.js';
 import './reactions.js';
+import { pushNudgeHtml, bindPushNudge } from './push.js';
+import { openTarget } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
 import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
@@ -77,6 +79,7 @@ function accountSheet() {
   s.el.querySelector('[data-notif-settings]').onclick = () => { s.close(); go('settings').then(() => $('#screen-settings [data-section=notifications]')?.scrollIntoView({ block: 'start' })); };
   s.el.querySelector('[data-photo]').onclick = () => openPhotoEditor();
   s.el.querySelector('[data-notif-clear]').onclick = () => clearAll();
+  pushNudgeHtml().then((h) => { if (h && !s.closed) { s.el.querySelector('.notif-head').insertAdjacentHTML('beforebegin', h); bindPushNudge(s.el); } });
   const bindMore = () => s.el.querySelector('[data-see-all]')?.addEventListener('click', () => { s.close(); go('notifications'); });
   bindList(s.el, () => s.close());
   bindMore();
@@ -179,7 +182,7 @@ function authScreen(mode, { tripName, joinCode } = {}) {
       err.textContent = ex.message;
     } finally { btn.disabled = false; }
   };
-  setTimeout(() => (mode === 'join' && !joinCode ? form.querySelector('[name=code]') : form.querySelector('[name=name]'))?.focus(), 50);
+  setTimeout(() => { if (!form.contains(document.activeElement)) (mode === 'join' && !joinCode ? form.querySelector('[name=code]') : form.querySelector('[name=name]'))?.focus(); }, 50);
 }
 
 // ---------- app ----------
@@ -217,6 +220,24 @@ async function startApp() {
   go(['itinerary', 'money', 'settings', 'notifications'].includes(hash) ? hash : 'map');
   connect();
 }
+
+// ---------- opened from a push notification ----------
+// The notification links to /?n=<id>; if Tabi was already open, the service worker messages us instead.
+function openNotification(id) {
+  const tryOpen = () => {
+    const n = state.notifications.find((x) => String(x.id) === String(id));
+    if (!n) return false;
+    import('./notifications.js').then((m) => { m.markRead([n.id]); openTarget(n); });
+    return true;
+  };
+  if (!tryOpen()) { const off = on('state', () => { off(); tryOpen(); }); }
+}
+{
+  const u = new URL(location.href);
+  const nid = u.searchParams.get('n');
+  if (nid) { u.searchParams.delete('n'); history.replaceState(null, '', u.pathname + u.search + u.hash); openNotification(nid); }
+}
+navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.t === 'open-notif' && e.data.id) openNotification(e.data.id); });
 
 on('unauthorized', () => {
   signOutLocal();
@@ -270,33 +291,63 @@ addEventListener('unhandledrejection', (e) => reportError(e.reason?.message || e
 // the app would keep running old code. The server tells us its current build on every (re)connect;
 // if it isn't the build this page was loaded from, reload as soon as nothing is in progress.
 // Unsent edits are kept in localStorage, so a reload never loses them.
+//
+// If a plain reload comes back with the old page again (a browser holding on to old files), the
+// next try clears Tabi's offline copy and the service worker first. If even that doesn't help,
+// the server that answers the page is probably behind the one we're connected to (a backup
+// still on the old version): stop, say so, and report it to the developer console.
 const PAGE_BUILD = document.querySelector('meta[name=tabi-build]')?.content || '';
-let reloadPending = false;
+const UPD = 'tabi.update';
+const updState = () => { try { return JSON.parse(sessionStorage.getItem(UPD) || 'null'); } catch { return null; } };
+let reloadTimer = 0;
 function busy() {
   const a = document.activeElement;
   return !!document.querySelector('.sheet:not(.closing), .tour') || (a && a.matches('input, textarea, select'));
 }
-function reloadWhenIdle() {
-  if (reloadPending) return;
-  const last = +sessionStorage.getItem('tabi.reloadedAt') || 0;
-  if (Date.now() - last < 2 * 60e3) return; // never loop
-  reloadPending = true;
-  const tryNow = async () => {
-    if (busy() && !document.hidden) return setTimeout(tryNow, 4000);
-    sessionStorage.setItem('tabi.reloadedAt', Date.now());
+// Clear the offline copy of the app (not saved maps or photos) and the service worker, then reload.
+export async function hardReload(target = '') {
+  try { for (const k of await caches.keys()) if (k.startsWith('tabi-shell-')) await caches.delete(k); } catch { /* not available */ }
+  try { for (const r of (await navigator.serviceWorker?.getRegistrations()) || []) await r.unregister(); } catch { /* not available */ }
+  const u = new URL(location.href);
+  u.searchParams.set('v', target || Date.now().toString(36)); // a URL no cache has seen
+  location.replace(u.toString());
+}
+function reloadWhenIdle(target) {
+  if (reloadTimer) return;
+  const st = updState();
+  const tries = st?.target === target ? st.tries : 0;
+  if (tries >= 3) return stuckOnOldBuild(target);
+  const wait = Math.max(0, (st?.at || 0) + 60e3 - Date.now()); // at most one try a minute: never a loop
+  reloadTimer = setTimeout(function tryNow() {
+    if (busy() && !document.hidden) { reloadTimer = setTimeout(tryNow, 4000); return; }
+    sessionStorage.setItem(UPD, JSON.stringify({ target, tries: tries + 1, at: Date.now(), from: PAGE_BUILD }));
     sessionStorage.setItem('tabi.justUpdated', '1');
-    try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ }
-    location.reload();
-  };
-  tryNow();
+    if (tries === 0) {
+      (async () => { try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ } location.reload(); })();
+    } else hardReload(target);
+  }, wait);
+}
+let stuckShown = false;
+function stuckOnOldBuild(target) {
+  if (stuckShown) return;
+  stuckShown = true;
+  reportError(`page stuck on build ${PAGE_BUILD}; server says ${target}`, 'self-update');
+  toast('This browser keeps getting an older version of Tabi. Try “Reload app” in Settings, or tell the trip admin.', { ms: 9000 });
 }
 on('state', () => {
   const b = state.config.build;
-  if (b && /^\d/.test(PAGE_BUILD) && b !== PAGE_BUILD) reloadWhenIdle();
+  if (b && /^\d/.test(PAGE_BUILD) && b !== PAGE_BUILD) reloadWhenIdle(b);
+  else if (b && b === PAGE_BUILD) sessionStorage.removeItem(UPD);
 });
+if (new URL(location.href).searchParams.has('v')) { // tidy the address bar after a hard reload
+  const u = new URL(location.href); u.searchParams.delete('v'); history.replaceState(null, '', u.pathname + u.search + u.hash);
+}
 if (sessionStorage.getItem('tabi.justUpdated')) {
   sessionStorage.removeItem('tabi.justUpdated');
-  const off = on('state', () => { off(); toast(`Tabi updated to ${state.config.version || 'the latest version'}`); });
+  const off = on('state', () => {
+    off();
+    if (state.config.build === PAGE_BUILD) toast(`Tabi updated to ${state.config.version || 'the latest version'}`);
+  });
 }
 
 if ('serviceWorker' in navigator && (isSecureContext)) {

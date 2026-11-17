@@ -2,8 +2,9 @@
 // Friends list); when one arrives it pops up on screen with quick replies, and floats up from the
 // sender's spot on the map.
 import { state, on, op, emit, userById } from './store.js';
-import { esc, avatar, ago, toast } from './ui.js';
+import { esc, avatar, ago, toast, icon } from './ui.js';
 import { markRead } from './notifications.js';
+import { emojiHtml, isCustom, openEmojiPicker } from './emoji.js';
 
 const DEFAULT = ['👋', '❤️', '😂', '🎉', '🙏', '👍', '😮', '🍻'];
 export const reactionSet = () => (state.config?.reactions?.length ? state.config.reactions : DEFAULT);
@@ -14,7 +15,7 @@ export async function sendReaction(to, emoji, { from } = {}) {
   const r = await op('react.send', { to, emoji });
   if (r?.ok === false) { toast(r.error || 'Couldn’t send that. Check your connection.'); return false; }
   const who = to === 'all' ? 'everyone' : userById(to)?.name || 'them';
-  toast(`Sent ${emoji} to ${who}`, { ms: 1800 });
+  toast(`Sent ${emoji} to ${who}`, { ms: 1800 }); // :name: reads fine as text
   if (from) popButton(from);
   return true;
 }
@@ -32,11 +33,21 @@ export function reactionRowHtml(u) {
       <h3><span aria-hidden="true">👋</span> Say hi</h3>
       <div class="react-row" role="group" aria-label="Send ${esc(u.name)} a reaction">
         ${reactionSet().map((e) => `<button class="react-btn" data-react="${esc(e)}" aria-label="Send ${esc(u.name)} a ${esc(NAMES[e] || e)}" data-tip="Send ${esc(u.name)} ${esc(e)}">${esc(e)}</button>`).join('')}
+        ${recentCustom().map((e) => `<button class="react-btn" data-react="${esc(e)}" aria-label="Send ${esc(u.name)} ${esc(e)}" data-tip="Send ${esc(u.name)} ${esc(e)}">${emojiHtml(e)}</button>`).join('')}
+        <button class="react-btn more" data-react-more aria-label="Custom emojis" data-tip="Custom emojis made by the group, or add your own">${icon('smile')}<span class="more-plus">+</span></button>
       </div>
-      ${recent.length ? `<ul class="react-log">${recent.map((r) => `<li>${r.from === state.me?.id ? 'You sent' : `${esc(u.name)} sent you`} <span class="react-e">${esc(r.emoji)}</span> <time>${ago(r.ts)}</time></li>`).join('')}</ul>` : ''}
+      ${recent.length ? `<ul class="react-log">${recent.map((r) => `<li>${r.from === state.me?.id ? 'You sent' : `${esc(u.name)} sent you`} <span class="react-e">${emojiHtml(r.emoji)}</span> <time>${ago(r.ts)}</time></li>`).join('')}</ul>` : ''}
     </section>`;
 }
+// The custom emojis you've used lately get their own buttons in the row (up to 3).
+function recentCustom() {
+  const names = new Set((state.customEmojis || []).map((e) => `:${e.name}:`));
+  const out = [];
+  for (const r of state.reactions) if (r.from === state.me?.id && isCustom(r.emoji) && names.has(r.emoji) && !out.includes(r.emoji)) { out.push(r.emoji); if (out.length === 3) break; }
+  return out;
+}
 export function bindReactionRow(root, u) {
+  root.querySelector('[data-react-more]')?.addEventListener('click', () => openEmojiPicker({ title: `Send ${u.name} a custom emoji`, onPick: (e) => sendReaction(u.id, e) }));
   root.querySelectorAll('[data-react]').forEach((b) => b.onclick = async () => {
     b.disabled = true;
     await sendReaction(u.id, b.dataset.react, { from: b });
@@ -54,7 +65,7 @@ function showIncoming(r, all) {
   emit('reaction-pop', { userId: u.id, emoji: r.emoji });
   if (card && card.from === u.id && card.el.isConnected) {
     card.n++;
-    card.el.querySelector('[data-what]').innerHTML = `${esc(u.name)} sent ${all ? 'everyone' : 'you'} <span class="react-e">${esc(r.emoji)}</span>${card.n > 1 ? ` <span class="react-count">×${card.n}</span>` : ''}`;
+    card.el.querySelector('[data-what]').innerHTML = `${esc(u.name)} sent ${all ? 'everyone' : 'you'} <span class="react-e">${emojiHtml(r.emoji)}</span>${card.n > 1 ? ` <span class="react-count">×${card.n}</span>` : ''}`;
     clearTimeout(card.timer);
     card.timer = setTimeout(closeCard, 7000);
     return;
@@ -66,7 +77,7 @@ function showIncoming(r, all) {
   el.innerHTML = `
     <button class="react-who" data-open aria-label="Open ${esc(u.name)}’s card">${avatar(u)}</button>
     <div class="react-main">
-      <div class="react-what" data-what>${esc(u.name)} sent ${all ? 'everyone' : 'you'} <span class="react-e">${esc(r.emoji)}</span></div>
+      <div class="react-what" data-what>${esc(u.name)} sent ${all ? 'everyone' : 'you'} <span class="react-e">${emojiHtml(r.emoji)}</span></div>
       <div class="react-replies" role="group" aria-label="Reply to ${esc(u.name)}">
         ${['👋', '❤️', '😂', '🍻'].filter((e) => reactionSet().includes(e)).map((e) => `<button class="react-btn small" data-reply="${esc(e)}" aria-label="Reply with ${esc(NAMES[e] || e)}">${esc(e)}</button>`).join('')}
       </div>
@@ -104,7 +115,7 @@ function burst(emoji) {
   layer.setAttribute('aria-hidden', 'true');
   for (let i = 0; i < 9; i++) {
     const s = document.createElement('span');
-    s.textContent = emoji;
+    if (isCustom(emoji)) s.innerHTML = emojiHtml(emoji, 'burst'); else s.textContent = emoji;
     s.style.left = `${8 + Math.random() * 84}%`;
     s.style.setProperty('--d', `${(Math.random() * 0.5).toFixed(2)}s`);
     s.style.setProperty('--s', (0.8 + Math.random() * 0.9).toFixed(2));

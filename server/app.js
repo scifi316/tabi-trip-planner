@@ -12,6 +12,7 @@ import { devPush, devRecent, devSubscribe, startedAt } from './devlog.js';
 import { cleanExpense, CURRENCIES } from './money.js';
 import { createNotifier, prefsOf, cleanPrefs, NOTIFY_KINDS } from './notify.js';
 import { imageSize } from './images.js';
+import { createPusher } from './push.js';
 
 export function createApp({ db, blobs, root, dataDir = '', env = process.env, getHealth = () => ({}) }) {
   const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
@@ -71,7 +72,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const getSetting = (key, fallback) => { const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(key); return r ? JSON.parse(r.value) : fallback; };
   const setSetting = (key, value) => db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value));
 
-  const DEFAULT_TRIP = { name: 'Japan trip', start: null, end: null, timezone: 'Asia/Tokyo', autoConfirm: 0, vetoRule: 'single', joinCode: null, currency: 'JPY' };
+  const DEFAULT_TRIP = { name: 'Japan trip', start: null, end: null, timezone: 'Asia/Tokyo', autoConfirm: 0, vetoRule: 'single', joinCode: null, currency: 'JPY', photoReminder: '19:00' };
   const getTrip = () => ({ ...DEFAULT_TRIP, ...getSetting('trip', {}) });
 
   const cache = {
@@ -140,6 +141,30 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
 
   // Reactions people can send each other. Kept short so the row fits on a phone.
   const REACTIONS = ['👋', '❤️', '😂', '🎉', '🙏', '👍', '😮', '🍻'];
+  // Custom emojis: written :name: wherever an emoji goes (reactions), drawn from a small image.
+  const EMOJI_MAX = 100, EMOJI_PX = 128, EMOJI_BYTES = 64 * 1024;
+  const EMOJI_NAME = /^[a-z0-9_]{2,24}$/;
+  const customEmojis = () => db.prepare('SELECT * FROM custom_emojis WHERE deleted_at IS NULL ORDER BY id').all()
+    .map((e) => ({ name: e.name, url: `/api/emoji/${e.file}`, by: e.created_by, at: e.created_at }));
+  // ---- picture a day ----
+  const PHOTOS_PER_DAY = 5;
+  const PHOTO_LIMIT = (+env.PHOTO_LIMIT_MB || 2048) * 1024 * 1024; // all photos together (R2's free tier is 10 GB)
+  const photoList = () => {
+    const likes = {};
+    for (const l of db.prepare('SELECT photo_id, user_id FROM photo_likes').all()) (likes[l.photo_id] ||= []).push(l.user_id);
+    return db.prepare('SELECT * FROM daily_photos WHERE deleted_at IS NULL ORDER BY day, id').all().map((p) => ({
+      id: p.id, day: p.day, by: p.user_id, url: `/api/photos/f/${p.file}`, thumb: `/api/photos/f/${p.thumb}`, w: p.width, h: p.height,
+      bytes: p.bytes, caption: p.caption || '', takenAt: p.taken_at, at: p.created_at, likes: likes[p.id] || [] }));
+  };
+  // ---- stays ----
+  const listStays = () => db.prepare('SELECT * FROM stays WHERE deleted_at IS NULL ORDER BY COALESCE(start_day, \'0\'), created_at').all()
+    .map((s) => ({ id: s.id, name: s.name, address: s.address || '', lat: s.lat, lng: s.lng, startDay: s.start_day, endDay: s.end_day, notes: s.notes || '', by: s.created_by }));
+  const broadcastStays = () => broadcast({ t: 'stays', stays: listStays() });
+  const activeUsers = () => db.prepare('SELECT id, name FROM users WHERE removed_at IS NULL').all();
+  const photoBytes = () => db.prepare('SELECT COALESCE(SUM(bytes), 0) n FROM daily_photos WHERE deleted_at IS NULL').get().n;
+  const broadcastPhotos = () => broadcast({ t: 'photos', list: photoList(), bytes: photoBytes(), limit: PHOTO_LIMIT });
+  const isReaction = (s) => REACTIONS.includes(s)
+    || (/^:[a-z0-9_]{2,24}:$/.test(s) && !!db.prepare('SELECT 1 FROM custom_emojis WHERE name = ? AND deleted_at IS NULL').get(s.slice(1, -1)));
   const recentReactions = (uid) => db.prepare('SELECT * FROM reactions WHERE from_id = ? OR to_id = ? ORDER BY id DESC LIMIT 60').all(uid, uid)
     .map((r) => ({ id: r.id, from: r.from_id, to: r.to_id, emoji: r.emoji, ts: r.ts }));
 
@@ -247,7 +272,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
 
   function tripForClient(user) {
     const t = getTrip();
-    return { name: t.name, start: t.start, end: t.end, timezone: t.timezone, autoConfirm: t.autoConfirm, vetoRule: t.vetoRule, currency: t.currency, joinCode: user ? t.joinCode : undefined };
+    return { name: t.name, start: t.start, end: t.end, timezone: t.timezone, autoConfirm: t.autoConfirm, vetoRule: t.vetoRule, currency: t.currency, photoReminder: t.photoReminder, joinCode: user ? t.joinCode : undefined };
   }
 
   function snapshot(user) {
@@ -261,14 +286,17 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       users: listUsers(),
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
       subgroups: listSubgroups(),
+      stays: listStays(),
       expenses: db.prepare('SELECT * FROM expenses WHERE deleted_at IS NULL').all().map(expenseRow).filter((e) => canSeeExpense(me, e)),
       locations: listLocations(),
       online: onlineIds(),
       activity: recentActivity(),
       notifications: notifier.list(me.id),
       reactions: recentReactions(me.id),
+      customEmojis: customEmojis(),
+      photos: { list: photoList(), bytes: photoBytes(), limit: PHOTO_LIMIT },
       unread: notifier.unread(me.id),
-      config: { ...CONFIG, version: VERSION, build: BUILD, reactions: REACTIONS, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
+      config: { ...CONFIG, version: VERSION, build: BUILD, server: env.HA_NODE || os.hostname(), reactions: REACTIONS, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -437,7 +465,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const AVATAR_MAX_BYTES = 512 * 1024;
   // Old profile photos are deleted so they don't take up storage.
   function dropBlobIfUnused(key) {
-    if (db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(key) || db.prepare('SELECT 1 FROM attachments WHERE blob_key = ?').get(key)) return;
+    if (db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(key) || db.prepare('SELECT 1 FROM attachments WHERE blob_key = ?').get(key)
+      || db.prepare('SELECT 1 FROM custom_emojis WHERE file = ? AND deleted_at IS NULL').get(key)
+      || db.prepare('SELECT 1 FROM daily_photos WHERE (file = ? OR thumb = ?) AND deleted_at IS NULL').get(key, key)) return;
     blobs.del?.(key).catch(() => {});
   }
 
@@ -453,7 +483,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     try {
-      if (p === '/healthz') return send(res, 200, { ok: true, ...getHealth() });
+      if (p === '/healthz') { const { servers, ...h } = getHealth(); return send(res, 200, { ok: true, ...h }); } // one "role" only: scripts read it
 
       // Developer console entry: /dev?devkey=<DEV_KEY> once per device, then /dev
       if (DEV_KEY && (p === '/dev' || p === '/dev/')) {
@@ -683,6 +713,33 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return send(res, 200, { ok: true });
       }
       // Errors from people's browsers, so they show up in the developer console
+      // ---- Web Push (per device) ----
+      if (p === '/api/push/key') return send(res, 200, { publicKey: pusher.publicKey() });
+      if (p === '/api/push/status' && req.method === 'POST') {
+        const b = await readBody(req).catch(() => ({}));
+        return send(res, 200, { on: pusher.has(user.id, b.endpoint), devices: pusher.devicesOf(user.id).length });
+      }
+      if (p === '/api/push/subscribe' && req.method === 'POST') {
+        const b = await readBody(req).catch(() => ({}));
+        try { pusher.subscribe(user.id, b.subscription, req.headers['user-agent']); } catch (e) { return send(res, 400, { error: e.expose ? e.message : 'Couldn’t turn on notifications.' }); }
+        pusher.noteOrigin(`${req.headers['x-forwarded-proto'] === 'https' || TRUST_PROXY ? 'https' : 'http'}://${req.headers.host}`);
+        devPush('op', { user: user.name, op: 'push.subscribe', ok: true });
+        return send(res, 200, { ok: true });
+      }
+      if (p === '/api/push/unsubscribe' && req.method === 'POST') {
+        const b = await readBody(req).catch(() => ({}));
+        pusher.unsubscribe(user.id, b.endpoint);
+        devPush('op', { user: user.name, op: 'push.unsubscribe', ok: true });
+        return send(res, 200, { ok: true });
+      }
+      if (p === '/api/push/test' && req.method === 'POST') {
+        const b = await readBody(req).catch(() => ({}));
+        if (!pusher.has(user.id, b.endpoint)) return send(res, 400, { error: 'Notifications aren’t on for this device yet.' });
+        const gate = auth.gateEnabled ? `gate=${auth.gateToken}&` : '';
+        const [r] = await pusher.send(user.id, { title: getTrip().name || 'Tabi', body: 'Notifications work on this device. You’ll get them here when Tabi is closed.', tag: 'test', url: `/?${gate}` }, { endpoint: b.endpoint, ttl: 300 });
+        if (!r?.ok) return send(res, 502, { error: r?.gone ? 'The browser cancelled notifications for this device. Turn them on again.' : `The push service didn’t accept it (${r?.status || r?.error || 'no answer'}).` });
+        return send(res, 200, { ok: true });
+      }
       if (p === '/api/clientlog' && req.method === 'POST') {
         const b = await readBody(req).catch(() => ({}));
         const n = (clientLogCount.get(user.id) || 0) + 1;
@@ -717,6 +774,29 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         } catch (e) {
           return send(res, 502, { error: 'Search is unavailable right now. Paste a map link instead.', detail: e.message });
         }
+      }
+
+      // An address (or a map link) to a spot on the map, for stays. Japanese addresses with building
+      // numbers often aren't in OpenStreetMap, so we retry with less detail and say it's approximate.
+      if (p === '/api/address' && req.method === 'GET') {
+        const q = String(url.searchParams.get('q') || '').trim().slice(0, 200);
+        if (!q) return send(res, 200, { results: [] });
+        if (/^https?:\/\//i.test(q)) {
+          const r = await resolveLink(q, cache);
+          return send(res, 200, { results: r?.ok ? [{ name: r.name || 'Pinned spot', lat: r.lat, lng: r.lng, address: r.address || '' }] : [], fromLink: true });
+        }
+        const tries = [q];
+        const noPost = q.replace(/〒?\s*\d{3}[-‐－ー]?\d{4}/g, '').replace(/,\s*Japan$/i, '').trim();
+        if (noPost && noPost !== q) tries.push(noPost);
+        const noNum = noPost.replace(/[\s,]*[0-9０-９]+([-‐－−ー〜の][0-9０-９]+)*\s*(丁目|番地?|号)?\s*$/u, '').replace(/[0-9０-９]+[-‐－−ー][0-9０-９]+([-‐－−ー][0-9０-９]+)?/gu, '').replace(/\s{2,}/g, ' ').trim();
+        if (noNum && !tries.includes(noNum)) tries.push(noNum);
+        for (const [i, t] of tries.entries()) {
+          try {
+            const results = await photon(`/api?limit=5&lang=en&bbox=122.9,24.0,146.0,45.6&q=${encodeURIComponent(t)}`);
+            if (results.length) return send(res, 200, { results, approximate: i > 0, used: t });
+          } catch { return send(res, 502, { error: 'Address search is unavailable right now. Paste a Google Maps link, or set it on the map.' }); }
+        }
+        return send(res, 200, { results: [] });
       }
 
       if (p === '/api/reverse' && req.method === 'GET') {
@@ -824,6 +904,103 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return res.end(buf);
       }
 
+      // Custom emojis: square, at most 128×128 and 64 KB, already cropped and shrunk in the browser.
+      if (p === '/api/emoji' && req.method === 'POST') {
+        const name = String(url.searchParams.get('name') || '').toLowerCase();
+        if (!EMOJI_NAME.test(name)) return send(res, 400, { error: 'Names are 2 to 24 letters, numbers or _ (like ramen or kai_wave).' });
+        if (db.prepare('SELECT 1 FROM custom_emojis WHERE name = ? AND deleted_at IS NULL').get(name)) return send(res, 409, { error: `There’s already a :${name}:. Pick another name.` });
+        if (db.prepare('SELECT COUNT(*) n FROM custom_emojis WHERE deleted_at IS NULL').get().n >= EMOJI_MAX) return send(res, 400, { error: `The trip already has ${EMOJI_MAX} custom emojis. Remove one first.` });
+        const mime = String(req.headers['content-type'] || '').split(';')[0];
+        const ext = { 'image/png': 'png', 'image/webp': 'webp', 'image/jpeg': 'jpg' }[mime];
+        if (!ext) return send(res, 415, { error: 'Use a PNG or WebP image.' });
+        let buf;
+        try { buf = await readRaw(req, EMOJI_BYTES); } catch { return send(res, 413, { error: 'Emojis can be 64 KB at most.' }); }
+        const size = imageSize(buf);
+        if (!size || size.type !== ext) return send(res, 400, { error: 'That image could not be read.' });
+        if (size.width !== size.height || size.width > EMOJI_PX || size.width < 16) return send(res, 400, { error: `Emojis must be square, ${EMOJI_PX}×${EMOJI_PX} pixels at most.` });
+        const file = await blobs.put(buf, ext);
+        db.prepare('INSERT INTO custom_emojis(name, file, created_by, created_at) VALUES(?, ?, ?, ?)').run(name, file, user.id, now());
+        broadcast({ t: 'emojis', list: customEmojis() });
+        logActivity(user.id, `${user.name} added the emoji :${name}:`);
+        devPush('op', { user: user.name, op: 'emoji.add', ok: true, name, bytes: buf.length });
+        return send(res, 200, { ok: true, name });
+      }
+      const em = p.match(/^\/api\/emoji\/([a-z0-9_]{2,24})$/);
+      if (em && req.method === 'DELETE') {
+        const e = db.prepare('SELECT * FROM custom_emojis WHERE name = ? AND deleted_at IS NULL').get(em[1]);
+        if (!e) return send(res, 404, { error: 'That emoji is already gone.' });
+        if (e.created_by !== user.id && !user.is_admin) return send(res, 403, { error: 'Only whoever added it, or a trip admin, can remove it.' });
+        db.prepare('UPDATE custom_emojis SET deleted_at = ? WHERE id = ?').run(now(), e.id);
+        dropBlobIfUnused(e.file);
+        broadcast({ t: 'emojis', list: customEmojis() });
+        logActivity(user.id, `${user.name} removed the emoji :${e.name}:`);
+        return send(res, 200, { ok: true });
+      }
+      const emf = p.match(/^\/api\/emoji\/([a-f0-9]{64}\.(?:png|webp|jpg))$/);
+      if (emf && req.method === 'GET') {
+        if (!db.prepare('SELECT 1 FROM custom_emojis WHERE file = ?').get(emf[1])) return send(res, 404, { error: 'Not found' });
+        const buf = await blobs.get(emf[1]);
+        if (!buf) return send(res, 404, { error: 'Not found' });
+        res.writeHead(200, { 'Content-Type': { png: 'image/png', webp: 'image/webp', jpg: 'image/jpeg' }[emf[1].split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(buf);
+      }
+
+      // Picture a day. The browser sends both sizes in one body: [4-byte length][thumbnail][photo],
+      // already resized (photo ≤ 2560 px, thumbnail ≤ 640 px) with location data stripped.
+      if (p === '/api/photos' && req.method === 'POST') {
+        let meta = {};
+        try { meta = JSON.parse(decodeURIComponent(String(req.headers['x-photo-meta'] || '{}'))); } catch { /* checked below */ }
+        const day = String(meta.day || '');
+        const t = getTrip(), today = tripToday();
+        if (!isDay(day) || !day) return send(res, 400, { error: 'Which day is this photo for?' });
+        if (day > today) return send(res, 400, { error: 'Photos can be added for today or earlier days.' });
+        if (t.start && day < t.start) return send(res, 400, { error: 'That day is before the trip starts.' });
+        if (t.end && day > t.end) return send(res, 400, { error: 'That day is after the trip ends.' });
+        let buf;
+        try { buf = await readRaw(req, 4 * 1024 * 1024); } catch { return send(res, 413, { error: 'That photo is too big (4 MB at most after shrinking).' }); }
+        const tl = buf.length > 4 ? buf.readUInt32BE(0) : 0;
+        const thumbBuf = buf.subarray(4, 4 + tl), fullBuf = buf.subarray(4 + tl);
+        const ts = imageSize(thumbBuf), fs2 = imageSize(fullBuf);
+        if (!tl || !ts || !fs2) return send(res, 400, { error: 'That photo could not be read.' });
+        if (Math.max(fs2.width, fs2.height) > 2560 || Math.max(ts.width, ts.height) > 640 || thumbBuf.length > 300 * 1024) return send(res, 400, { error: 'The photo wasn’t shrunk properly. Reload Tabi and try again.' });
+        if (photoBytes() + buf.length > PHOTO_LIMIT) return send(res, 507, { error: `The trip’s photo space is full (${PHOTO_LIMIT >= 1073741824 ? `${+(PHOTO_LIMIT / 1073741824).toFixed(1)} GB` : `${+(PHOTO_LIMIT / 1048576).toFixed(1)} MB`}). An admin can remove some photos, or raise PHOTO_LIMIT_MB on the server.` });
+        const caption = str(meta.caption, 140);
+        const [file, thumb] = [await blobs.put(fullBuf, fs2.type), await blobs.put(thumbBuf, ts.type)];
+        // Checked again right before saving: two people adding the 5th photo at once
+        const n = db.prepare('SELECT COUNT(*) n FROM daily_photos WHERE day = ? AND deleted_at IS NULL').get(day).n;
+        if (n >= PHOTOS_PER_DAY) { dropBlobIfUnused(file); dropBlobIfUnused(thumb); return send(res, 409, { error: `This day already has ${PHOTOS_PER_DAY} photos. Remove one to add another.` }); }
+        const id = Number(db.prepare('INSERT INTO daily_photos(day, user_id, file, thumb, width, height, bytes, caption, taken_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(day, user.id, file, thumb, fs2.width, fs2.height, fullBuf.length + thumbBuf.length, caption || null, Number.isFinite(+meta.takenAt) ? +meta.takenAt : null, now()).lastInsertRowid);
+        broadcastPhotos();
+        const nice = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(day + 'T00:00:00Z'));
+        logActivity(user.id, `${user.name} added a photo for ${nice}`);
+        notifier.notify(activeUsers().filter((u) => u.id !== user.id).map((u) => ({ userId: u.id, kinds: ['photos'], merge: 'count',
+          text: (k) => (k > 1 ? `${k} new photos for ${day === today ? 'today' : nice}` : `${user.name} added ${n === 0 ? 'the first' : 'a'} photo for ${day === today ? 'today' : nice}`) })),
+        { ref: { type: 'photos', id: day } }); // no actor: photos from different people merge into one "3 new photos" per day
+        devPush('op', { user: user.name, op: 'photo.add', ok: true, day, bytes: buf.length });
+        return send(res, 200, { ok: true, id });
+      }
+      const ph = p.match(/^\/api\/photos\/(\d+)$/);
+      if (ph && req.method === 'DELETE') {
+        const row = db.prepare('SELECT * FROM daily_photos WHERE id = ? AND deleted_at IS NULL').get(+ph[1]);
+        if (!row) return send(res, 404, { error: 'That photo is already gone.' });
+        if (row.user_id !== user.id && !user.is_admin) return send(res, 403, { error: 'Only whoever added it, or a trip admin, can remove it.' });
+        db.prepare('UPDATE daily_photos SET deleted_at = ? WHERE id = ?').run(now(), row.id);
+        db.prepare('DELETE FROM photo_likes WHERE photo_id = ?').run(row.id);
+        dropBlobIfUnused(row.file); dropBlobIfUnused(row.thumb);
+        broadcastPhotos();
+        logActivity(user.id, `${user.name} removed a photo from ${row.day}`);
+        return send(res, 200, { ok: true });
+      }
+      const phf = p.match(/^\/api\/photos\/f\/([a-f0-9]{64}\.(?:jpg|png|webp))$/);
+      if (phf && req.method === 'GET') {
+        if (!db.prepare('SELECT 1 FROM daily_photos WHERE (file = ? OR thumb = ?) AND deleted_at IS NULL').get(phf[1], phf[1])) return send(res, 404, { error: 'Not found' });
+        const buf = await blobs.get(phf[1]);
+        if (!buf) return send(res, 404, { error: 'Not found' });
+        res.writeHead(200, { 'Content-Type': { png: 'image/png', webp: 'image/webp', jpg: 'image/jpeg' }[phf[1].split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(buf);
+      }
+
       // Receipt photos and screenshots
       if (p === '/api/attachments' && req.method === 'POST') {
         const mime = String(req.headers['content-type'] || '').split(';')[0];
@@ -885,7 +1062,21 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const clients = new Set();
   const onlineIds = () => [...new Set([...clients].map((c) => c.user.id))];
 
-  const notifier = createNotifier({ db, deliver: (userId, item, unread) => { for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif', item, unread }); } });
+  // A notification goes to every open app of theirs; if none of them is on screen, also as a push
+  // to the devices where they turned that on (so it reaches the lock screen).
+  const pusher = createPusher({ db, getSetting, setSetting, env, log: (...a) => console.log(new Date().toISOString(), ...a) });
+  const pushNotification = (userId, item, unread) => {
+    const gate = auth.gateEnabled ? `gate=${auth.gateToken}&` : '';
+    pusher.send(userId, { title: getTrip().name || 'Tabi', body: item.text, tag: `n${item.id}`, url: `/?${gate}n=${item.id}`, unread, ts: item.ts, kind: item.kind },
+      { topic: `n${item.id}`, urgency: item.kind === 'security' ? 'high' : 'normal' })
+      .then((rs) => { if (rs.length) devPush('op', { user: nameOf(userId), op: 'push.send', ok: rs.some((r) => r.ok), devices: rs.length, error: rs.find((r) => !r.ok)?.error || undefined }); })
+      .catch(() => {});
+  };
+  const notifier = createNotifier({ db, deliver: (userId, item, unread) => {
+    let onScreen = false;
+    for (const c of clients) if (c.user.id === userId) { sendTo(c, { t: 'notif', item, unread }); if (c.visible !== false) onScreen = true; }
+    if (!onScreen) pushNotification(userId, item, unread);
+  } });
   const notifyUnread = (userId) => { const n = notifier.unread(userId); for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif.unread', unread: n }); };
 
   function sendTo(c, msg) { if (c.ws.readyState === 1) c.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
@@ -924,9 +1115,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const session = auth.resolve(req, url);
     if (!session) return reject(401, 'Unauthorized');
     wss.handleUpgrade(req, socket, head, (ws) => {
-      const client = { ws, user: session.user, sessionHash: session.hash, alive: true, since: Date.now(), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 160) };
+      const client = { ws, user: session.user, sessionHash: session.hash, alive: true, since: Date.now(), ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 160),
+        build: String(url.searchParams.get('build') || '').slice(0, 40) }; // which build the page was loaded from
       clients.add(client);
-      devPush('ws', { user: session.user.name, event: 'connected', ip: client.ip });
+      devPush('ws', { user: session.user.name, event: 'connected', ip: client.ip, build: client.build || undefined, outdated: client.build && client.build !== BUILD ? true : undefined });
       sendTo(client, snapshot(session.user));
       broadcastPresence();
       ws.on('pong', () => { client.alive = true; });
@@ -934,6 +1126,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         let msg;
         try { msg = JSON.parse(raw); } catch { return; }
         if (msg.t === 'ping') return ws.send('{"t":"pong"}');
+        if (msg.t === 'vis') { client.visible = !!msg.v; return; } // is the app on screen? (decides push vs. in-app only)
         if (msg.t !== 'op') return;
         const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(client.user.id);
         if (!fresh) { ws.send('{"t":"kicked"}'); return ws.close(); }
@@ -962,6 +1155,23 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   }, 30000);
   heartbeat.unref();
   const purge = setInterval(() => { auth.purgeExpired(); notifier.purgeOld(); }, 6 * 3600e3);
+
+  // The evening nudge for picture a day: once a day, at the trip's chosen time, if nobody has added one.
+  function photoReminder(at = new Date()) {
+    const t = getTrip();
+    if (!t.photoReminder || t.photoReminder === 'off') return false;
+    const today = tripToday();
+    if ((t.start && today < t.start) || (t.end && today > t.end)) return false;
+    const hm = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: t.timezone || 'Asia/Tokyo' }).format(at);
+    if (hm < t.photoReminder || hm > '23:30') return false;
+    if (getSetting('photoRemindedOn', null) === today) return false;
+    setSetting('photoRemindedOn', today);
+    if (db.prepare('SELECT 1 FROM daily_photos WHERE day = ? AND deleted_at IS NULL').get(today)) return false;
+    notifier.notify(activeUsers().map((u) => ({ userId: u.id, kinds: ['photos'], text: 'No photo of the day yet. Got a good one from today? Anyone can add it (up to 5).' })), { ref: { type: 'photos', id: today } });
+    devPush('op', { user: '-', op: 'photo.reminder', ok: true, day: today });
+    return true;
+  }
+  const reminderTimer = setInterval(() => { try { photoReminder(); } catch (e) { console.error(e); } }, +env.PHOTO_REMINDER_EVERY_MS || 5 * 60e3);
   purge.unref();
 
   // ---------- operations ----------
@@ -1442,7 +1652,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       // ---- emoji reactions between people ----
       case 'react.send': {
         const emoji = String(d.emoji || '');
-        if (!REACTIONS.includes(emoji)) fail('Pick one of the reaction emoji.');
+        if (!isReaction(emoji)) fail('Pick one of the reaction emoji.');
         const targets = d.to === 'all'
           ? db.prepare('SELECT * FROM users WHERE removed_at IS NULL AND id != ?').all(user.id)
           : [db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+d.to)].filter(Boolean);
@@ -1537,7 +1747,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return { ok: true };
       }
       case 'notif.older': {
-        return { ok: true, notifications: notifier.older(user.id, +d.before || Number.MAX_SAFE_INTEGER, Math.min(+d.limit || 40, 100)) };
+        const lim = Math.min(Math.max(+d.limit || 40, 1), 100);
+        if (Number.isFinite(+d.beforeTs) && Number.isFinite(+d.beforeId)) return { ok: true, notifications: notifier.older(user.id, { ts: +d.beforeTs, id: +d.beforeId }, lim) };
+        return { ok: true, notifications: notifier.older(user.id, +d.before || Number.MAX_SAFE_INTEGER, lim) };
       }
       case 'notif.clear': {
         notifier.clear(user.id);
@@ -1560,6 +1772,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (t.start && t.end && t.end < t.start) fail('The trip has to end after it starts.');
         if ('autoConfirm' in d) t.autoConfirm = Math.max(0, Math.min(50, parseInt(d.autoConfirm, 10) || 0));
         if ('vetoRule' in d) { if (!['single', 'majority', 'off'].includes(d.vetoRule)) fail('Unknown veto rule'); t.vetoRule = d.vetoRule; }
+        if ('photoReminder' in d) { if (!(d.photoReminder === 'off' || /^([01]\d|2[0-3]):[0-5]\d$/.test(d.photoReminder))) fail('Pick a time for the photo reminder, or off.'); t.photoReminder = d.photoReminder; }
         if ('currency' in d && d.currency !== t.currency) {
           if (!(d.currency in CURRENCIES)) fail('Unsupported currency');
           if (db.prepare('SELECT 1 FROM expenses WHERE deleted_at IS NULL LIMIT 1').get()) fail('The trip currency can’t change once expenses have been added.');
@@ -1567,6 +1780,57 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         }
         setSetting('trip', t);
         for (const c of clients) sendTo(c, { t: 'trip', trip: tripForClient(c.user) });
+        return { ok: true };
+      }
+      case 'stay.save': {
+        const s = d.stay || {};
+        if (!/^[\w-]{6,64}$/.test(String(s.id || ''))) fail('Bad stay id');
+        const name = str(s.name, 80);
+        if (!name) fail('Give the stay a name, like the hotel’s.');
+        const lat = +s.lat, lng = +s.lng;
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) fail('Find the address or set it on the map first.');
+        const start = s.startDay || null, end = s.endDay || s.startDay || null;
+        if (!isDay(start) || !isDay(end)) fail('Dates must look like 2026-03-14');
+        if (start && end && end < start) fail('The last night has to be on or after the first.');
+        const prev = db.prepare('SELECT * FROM stays WHERE id = ? AND deleted_at IS NULL').get(s.id);
+        if (prev) db.prepare('UPDATE stays SET name = ?, address = ?, lat = ?, lng = ?, start_day = ?, end_day = ?, notes = ?, updated_at = ? WHERE id = ?')
+          .run(name, str(s.address, 200), lat, lng, start, end, str(s.notes, 400), now(), s.id);
+        else {
+          if (db.prepare('SELECT COUNT(*) n FROM stays WHERE deleted_at IS NULL').get().n >= 30) fail('That’s a lot of stays. Remove an old one first.');
+          db.prepare('INSERT INTO stays(id, name, address, lat, lng, start_day, end_day, notes, created_by, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+            .run(s.id, name, str(s.address, 200), lat, lng, start, end, str(s.notes, 400), user.id, now());
+        }
+        broadcastStays();
+        const when = start ? ` (${start === end ? start : `${start} to ${end}`})` : '';
+        logActivity(user.id, prev ? `${user.name} updated the stay ${name}` : `${user.name} added where we’re staying: ${name}${when}`);
+        if (!prev || prev.lat !== lat || prev.lng !== lng || prev.start_day !== start || prev.end_day !== end) {
+          notifier.notify(activeUsers().map((u) => ({ userId: u.id, kinds: ['plan'], text: prev ? `${user.name} changed the stay ${name}${when}` : `${user.name} added where we’re staying: ${name}${when}` })),
+            { actorId: user.id, ref: { type: 'stay', id: s.id } });
+        }
+        return { ok: true };
+      }
+      case 'stay.delete': {
+        const prev = db.prepare('SELECT * FROM stays WHERE id = ? AND deleted_at IS NULL').get(String(d.id || ''));
+        if (!prev) fail('That stay is already gone.');
+        db.prepare('UPDATE stays SET deleted_at = ? WHERE id = ?').run(now(), prev.id);
+        broadcastStays();
+        logActivity(user.id, `${user.name} removed the stay ${prev.name}`);
+        return { ok: true };
+      }
+      case 'photo.like': {
+        const row = db.prepare('SELECT id FROM daily_photos WHERE id = ? AND deleted_at IS NULL').get(+d.id);
+        if (!row) fail('That photo is gone.');
+        if (d.on) db.prepare('INSERT OR IGNORE INTO photo_likes(photo_id, user_id) VALUES(?, ?)').run(row.id, user.id);
+        else db.prepare('DELETE FROM photo_likes WHERE photo_id = ? AND user_id = ?').run(row.id, user.id);
+        broadcastPhotos();
+        return { ok: true };
+      }
+      case 'photo.caption': {
+        const row = db.prepare('SELECT * FROM daily_photos WHERE id = ? AND deleted_at IS NULL').get(+d.id);
+        if (!row) fail('That photo is gone.');
+        if (row.user_id !== user.id && !user.is_admin) fail('Only whoever added it can change the caption.');
+        db.prepare('UPDATE daily_photos SET caption = ? WHERE id = ?').run(str(d.caption, 140) || null, row.id);
+        broadcastPhotos();
         return { ok: true };
       }
       case 'trip.newCode': {
@@ -1635,8 +1899,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           geocache: count('SELECT COUNT(*) n FROM geocache'), activity: count('SELECT COUNT(*) n FROM activity'),
           notifications: count('SELECT COUNT(*) n FROM notifications'), unreadNotifications: count('SELECT COUNT(*) n FROM notifications WHERE read_at IS NULL'),
           profilePhotos: count('SELECT COUNT(*) n FROM users WHERE avatar IS NOT NULL'),
+          push: pusher.stats(),
         },
-        clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua })),
+        clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua, build: c.build || null, current: !c.build || c.build === BUILD })),
+        build: BUILD,
         trip: { ...tripForClient(null), joinCode: undefined },
         config: CONFIG,
         features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180) },
@@ -1670,6 +1936,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   return {
     server,
     userCount,
-    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); return new Promise((r) => server.close(r)); },
+    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); clearInterval(reminderTimer); return new Promise((r) => server.close(r)); },
+    photoReminder, // for tests
   };
 }

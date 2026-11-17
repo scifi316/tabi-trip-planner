@@ -1,20 +1,31 @@
 // Service worker: app shell works offline; map assets are cache-first so saved areas
 // keep working without a connection.
-const VERSION = 'tabi-shell-v5';
+const VERSION = 'tabi-shell-v6';
 const MAP_CACHE = 'tabi-map-v1';
 const SHELL = [
   '/', '/index.html', '/app.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
-  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js',
+  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
   '/vendor/maplibre-gl/maplibre-gl-worker.mjs',
   '/vendor/fflate/browser.js',
 ];
 
+// Each file is fetched on its own with a time limit, and only good responses are kept: one missing
+// or slow file (a deploy that renamed something) must never stop the new version from installing.
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => Promise.all(SHELL.map((u) => c.add(u).catch(() => {})))).then(() => self.skipWaiting()));
+  e.waitUntil((async () => {
+    const c = await caches.open(VERSION);
+    await Promise.all(SHELL.map(async (u) => {
+      try {
+        const r = await fetch(u, { cache: 'no-cache', signal: AbortSignal.timeout(15000) });
+        if (r.ok) await c.put(u, r);
+      } catch { /* offline or gone: the network-first fetch handler copes */ }
+    }));
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (e) => {
@@ -29,7 +40,7 @@ self.addEventListener('fetch', (e) => {
 
   if (url.origin === self.location.origin) {
     // Receipt images and profile photos never change (new ones get new URLs): keep them for offline viewing.
-    if (/^\/api\/(attachments\/[\w-]+|avatars\/[a-f0-9]{64}\.\w+)$/.test(url.pathname)) {
+    if (/^\/api\/(attachments\/[\w-]+|avatars\/[a-f0-9]{64}\.\w+|photos\/f\/[a-f0-9]{64}\.\w+|emoji\/[a-f0-9]{64}\.\w+)$/.test(url.pathname)) {
       e.respondWith(caches.open('tabi-receipts').then(async (c) => (await c.match(req)) || fetch(req).then((r) => { if (r.ok) c.put(req, r.clone()); return r; })));
       return;
     }
@@ -63,4 +74,55 @@ self.addEventListener('fetch', (e) => {
       }
     })());
   }
+});
+
+// ---------- Web Push: notifications while Tabi is closed ----------
+// The server only pushes when none of your Tabi windows is on screen. Every push must show a
+// notification (browsers require it), so even a malformed one shows something.
+function parsePush(text) {
+  try { return text ? JSON.parse(text) : {}; } catch { return { body: text || '' }; }
+}
+async function showPush(d) {
+    await self.registration.showNotification(d.title || 'Tabi', {
+      body: d.body || 'Something changed in your trip.',
+      tag: d.tag || undefined, // the same notification updated (a count going up) replaces itself
+      icon: '/icons/icon-192.png', badge: '/icons/badge-96.png',
+      timestamp: d.ts || Date.now(),
+      data: { url: d.url || '/' },
+    });
+    if (typeof d.unread === 'number' && self.navigator.setAppBadge) {
+      try { await (d.unread ? self.navigator.setAppBadge(d.unread) : self.navigator.clearAppBadge()); } catch { /* not supported */ }
+    }
+}
+self.addEventListener('push', (e) => {
+  let text = '';
+  try { text = e.data ? e.data.text() : ''; } catch { /* unreadable */ }
+  e.waitUntil(showPush(parsePush(text)));
+});
+
+// Tapping it opens Tabi at what it's about (or focuses Tabi if it's already open).
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || '/', self.location.origin);
+  e.waitUntil((async () => {
+    const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const win = wins.find((w) => new URL(w.url).origin === self.location.origin);
+    if (win) {
+      try { await win.focus(); } catch { /* some browsers refuse */ }
+      win.postMessage({ t: 'open-notif', id: url.searchParams.get('n') });
+      return;
+    }
+    await self.clients.openWindow(url.href);
+  })());
+});
+
+// Browsers sometimes renew a subscription on their own: tell the server about the new one.
+self.addEventListener('pushsubscriptionchange', (e) => {
+  e.waitUntil((async () => {
+    try {
+      const { publicKey } = await (await fetch('/api/push/key', { credentials: 'same-origin' })).json();
+      const sub = e.newSubscription || await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+      await fetch('/api/push/subscribe', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    } catch { /* the app re-registers next time it opens */ }
+  })());
 });

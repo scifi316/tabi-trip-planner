@@ -3,6 +3,9 @@ import * as maplibregl from '/vendor/maplibre-gl/maplibre-gl.mjs';
 import { state, on, emit, api, userById, groupById, groupsOn, myGroupOn, dayStops, defaultDay, tripDays, effectiveStatus, today } from './store.js';
 import { openGroups, groupWhere } from './groups.js';
 import { openFriends, openFriend } from './friends.js';
+import { emojiHtml } from './emoji.js';
+import { dayPhotoButton, bindDayPhotoButtons } from './photos.js';
+import { openStay, openStays, openStayEditor, stayFor, stayTonight } from './stays.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets, openSheet } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
@@ -99,6 +102,13 @@ export function initMap() {
   setupControls();
 
   on('places', () => { renderPlaces(); renderStrip(); });
+  on('photos', () => renderStrip());
+  on('stays', () => { renderStays(); renderFriends(); });
+  on('focus-stay', (id) => {
+    const s = state.stays.find((x) => x.id === id);
+    if (s) { stopFollow(); map.flyTo({ center: [s.lng, s.lat], zoom: Math.max(map.getZoom(), 15.5), padding: padding(), duration: 800 }); }
+  });
+  on('pick-location', pickLocation);
   on('select', renderPlaces);
   on('locations', renderFriends);
   on('users', renderFriends);
@@ -125,7 +135,7 @@ export function initMap() {
     if (!loc || $('#screen-map').hidden) return;
     const el = document.createElement('div');
     el.className = 'reaction-pop-mk'; // MapLibre moves this one; the inner one animates
-    el.innerHTML = `<span class="reaction-pop">${esc(emoji)}</span>`;
+    el.innerHTML = `<span class="reaction-pop">${emojiHtml(emoji, 'pop')}</span>`;
     const m = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -50] }).setLngLat([loc.lng, loc.lat]).addTo(map);
     setTimeout(() => m.remove(), 2400);
   });
@@ -154,11 +164,11 @@ export function initMap() {
   let firstFit = true;
   on('state', () => {
     if (!stripDay) stripDay = defaultDay();
-    renderStrip(); renderPlaces(); renderFriends();
+    renderStrip(); renderPlaces(); renderFriends(); renderStays();
     if (firstFit) { firstFit = false; fitAll({ animate: false }); }
   });
   stripDay = defaultDay();
-  renderStrip(); renderPlaces(); renderFriends();
+  renderStrip(); renderPlaces(); renderFriends(); renderStays();
   if (state.places.size) { firstFit = false; map.once('load', () => fitAll({ animate: false })); }
   setInterval(renderFriends, 30000);
   return map;
@@ -197,8 +207,50 @@ function fitTo(bounds, opts = {}) {
   map.fitBounds(bounds, { padding: padding(), absolutePadding: true, ...opts });
 }
 
+// ---------- stays: houses on the map ----------
+const stayMarkers = new Map();
+function renderStays() {
+  if (!map) return;
+  const home = stayTonight();
+  const seen = new Set();
+  for (const s of state.stays || []) {
+    seen.add(s.id);
+    let m = stayMarkers.get(s.id);
+    if (!m) {
+      const el = document.createElement('div');
+      el.className = 'stay-marker';
+      el.addEventListener('click', (e) => { e.stopPropagation(); openStay(s.id); });
+      m = { el, marker: new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([s.lng, s.lat]).addTo(map) };
+      stayMarkers.set(s.id, m);
+    }
+    m.marker.setLngLat([s.lng, s.lat]);
+    m.el.classList.toggle('home', s === home);
+    m.el.setAttribute('aria-label', `${s === home ? 'Home: ' : 'Stay: '}${s.name}`);
+    m.el.innerHTML = `<div class="stay-pin">${icon('home')}</div><div class="label">${s === home ? '<b>Home</b> ' : ''}${esc(s.name)}</div>`;
+  }
+  for (const [id, m] of stayMarkers) if (!seen.has(id)) { m.marker.remove(); stayMarkers.delete(id); }
+}
+
+// Pick a spot by moving the map under a cross (setting a stay on the map).
+let picking = null;
+function pickLocation({ at, label, done }) {
+  picking?.cancel();
+  closePeekSheets();
+  if (at) map.jumpTo({ center: [at.lng, at.lat], zoom: Math.max(map.getZoom(), 16) });
+  const ui = document.createElement('div');
+  ui.className = 'pick-ui';
+  ui.innerHTML = `<div class="pick-cross" aria-hidden="true"></div>
+    <div class="pick-bar" role="dialog" aria-label="${esc(label)}"><span>${esc(label)}</span>
+      <div class="pick-actions"><button class="btn" data-x>Cancel</button><button class="btn primary" data-ok>Use this spot</button></div></div>`;
+  document.getElementById('screen-map').appendChild(ui);
+  const end = (p) => { ui.remove(); picking = null; done?.(p); };
+  picking = { cancel: () => end(null) };
+  ui.querySelector('[data-x]').onclick = () => end(null);
+  ui.querySelector('[data-ok]').onclick = () => { const c = map.getCenter(); end({ lat: +c.lat.toFixed(6), lng: +c.lng.toFixed(6) }); };
+}
+
 function fitAll({ animate = true } = {}) {
-  const pts = [...state.places.values()].filter(isVisible);
+  const pts = [...state.places.values()].filter(isVisible).concat(state.stays || []);
   if (!pts.length) return;
   if (pts.length === 1) return map.jumpTo({ center: [pts[0].lng, pts[0].lat], zoom: 14 });
   const b = new maplibregl.LngLatBounds();
@@ -430,6 +482,10 @@ function renderFriends() {
   const groupOf = (id) => dayGroups.find((g) => g.memberIds.includes(+id));
   const others = state.users.filter((u) => u.id !== state.me?.id);
   const liveCount = others.filter((u) => state.locations[u.id] && Date.now() - state.locations[u.id].ts < 15 * 60e3).length;
+  const home = stayFor(), tonight = home && home === stayTonight();
+  chips.push(home
+    ? `<button class="friend-chip home-chip" data-home aria-label="${tonight ? 'Home' : 'Next stay'}: ${esc(home.name)}" data-tip="${tonight ? 'Where we’re staying tonight' : 'Where we’re staying next'}: ${esc(home.name)}">${icon('home', 'small')}<span>${tonight ? 'Home' : 'Next stay'}</span></button>`
+    : `<button class="friend-chip home-chip add" data-home-add data-tip="Add where you’re staying (hotel, Airbnb…) so everyone can find it">${icon('home', 'small')}<span>Add stay</span></button>`);
   if (others.length) chips.push(`<button class="friend-chip friends-btn" data-friends aria-label="Friends: ${liveCount} sharing live" data-tip="Friends: where everyone is, their plans, and money between you">${icon('users', 'small')}<span>Friends</span>${liveCount ? `<span class="age num">${liveCount} live</span>` : ''}</button>`);
   for (const g of dayGroups) {
     chips.push(`<button class="friend-chip group-chip" data-group="${g.id}" style="--g:${esc(g.color)}" aria-pressed="${currentGroup() === g.id}"><span class="group-dot"></span><span>${esc(g.name)}</span><span class="age num">${g.memberIds.length}</span></button>`);
@@ -457,6 +513,8 @@ function renderFriends() {
   chips.push(`<button class="friend-chip" data-groups aria-label="Subgroups" data-tip="Subgroups: for when the group splits up for a day or two">${icon('users', 'small')}<span>${dayGroups.length ? 'Groups' : 'Split up'}</span></button>`);
   row.innerHTML = chips.join('');
   row.querySelector('[data-groups]').onclick = () => openGroups();
+  row.querySelector('[data-home]')?.addEventListener('click', () => openStay(home.id));
+  row.querySelector('[data-home-add]')?.addEventListener('click', () => openStayEditor());
   row.querySelector('[data-friends]')?.addEventListener('click', () => openFriends());
   row.querySelectorAll('[data-group]').forEach((b) => b.onclick = () => emit('focus-group', b.dataset.group));
   row.querySelectorAll('[data-friend]').forEach((b) => b.onclick = () => openFriend(+b.dataset.friend, { follow: true }));
@@ -612,6 +670,7 @@ export function renderStrip() {
       <button class="strip-day" data-itin aria-label="Open this day in the itinerary"><b>${esc(label)}</b><span>${dayGroups.length ? `Day ${dayNo}` : `Day ${dayNo} of ${days.length}`}</span></button>
       ${dayGroups.length ? `<button class="strip-group" data-pick-group style="--g:${esc(grp?.color || 'var(--ink-3)')}" aria-label="Whose stops to show">${grp ? esc(grp.name) : 'Everyone'}</button>` : ''}
       <span class="strip-left">${leftText}</span>
+      ${dayPhotoButton(stripDay, 'strip')}
       <button class="icon-btn small" data-next aria-label="Next day" ${i >= days.length - 1 ? 'disabled' : ''}>${icon('chevron-right')}</button>
     </div>
     ${stops.length ? `
@@ -625,6 +684,7 @@ export function renderStrip() {
   el.querySelector('[data-prev]').onclick = () => emit('strip-day', days[i - 1]);
   el.querySelector('[data-next]').onclick = () => emit('strip-day', days[i + 1]);
   el.querySelector('[data-itin]').onclick = () => { emit('itin-day', stripDay); emit('go', 'itinerary'); };
+  bindDayPhotoButtons(el);
   el.querySelector('[data-plan]')?.addEventListener('click', () => { emit('itin-day', stripDay); emit('go', 'itinerary'); });
   el.querySelectorAll('.rail-stop').forEach((b) => b.onclick = () => emit('focus-place', b.dataset.id));
   el.querySelector('[data-pick-group]')?.addEventListener('click', () => {
