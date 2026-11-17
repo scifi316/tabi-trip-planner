@@ -6,6 +6,7 @@ import { esc, icon, STATUS, STATUS_ORDER, fmtDay, dayParts, toast } from './ui.j
 import { openPlace } from './place.js';
 import { openImport } from './add.js';
 import { meButton } from './main.js';
+import { photosOn, canAddOn, openDayPhotos, openViewer, openAlbum } from './photos.js';
 
 const root = () => document.getElementById('screen-itinerary');
 let day = 'all';     // 'all' | 'none' | YYYY-MM-DD
@@ -18,6 +19,8 @@ const collapsed = new Set(['vetoed']);
 on('itin-day', (d) => { day = d || 'all'; filter = 'all'; render(); });
 on('itin-person', (id) => { person = +id; day = 'all'; filter = 'all'; who = 'all'; reordering = false; render(); });
 on('places', () => isShown() && render());
+on('photos', () => isShown() && render());
+on('stays', () => isShown() && render());
 on('trip', () => isShown() && render());
 on('users', () => isShown() && render());
 on('subgroups', () => isShown() && render());
@@ -30,6 +33,22 @@ const FILTERS = [
   ['visited', 'Visited'], ['missed', 'Missed'], ['vetoed', 'Vetoed'], ['removed', 'Previously interested'],
 ];
 const groupOf = (p) => { const e = effectiveStatus(p); return e === 'skipped' ? 'missed' : e; };
+
+// Where the group sleeps that night
+function stayLineHtml(day) {
+  const s = (state.stays || []).find((x) => (!x.startDay || x.startDay <= day) && (!x.endDay || x.endDay >= day));
+  return s ? `<button class="itin-stay" data-open-stay="${esc(s.id)}">${icon('home', 'small')}<span>Staying at <b>${esc(s.name)}</b></span>${icon('chevron-right', 'small')}</button>` : '';
+}
+
+// Picture a day, at the top of a single day: its photos, or an invitation to add one.
+function dayStripHtml(day) {
+  const list = photosOn(day);
+  if (!list.length && !canAddOn(day)) return '';
+  return `<div class="itin-photos">
+    ${list.map((p) => `<button class="itin-photo" data-view-photo="${p.id}" aria-label="Photo ${esc(p.caption || '')}"><img src="${esc(p.thumb)}" alt="" loading="lazy"></button>`).join('')}
+    <button class="itin-photo add" data-open-day-photos="${day}">${icon('camera')}<span>${list.length ? `${list.length} of 5` : 'Add the day’s photo'}</span></button>
+  </div>`;
+}
 
 export function render() {
   const el = root();
@@ -60,6 +79,7 @@ export function render() {
         ${meButton()}
         <div class="grow"><h1>${esc(tr.name || 'Itinerary')}</h1>
           <div class="sub">${tr.start && tr.end ? `${esc(fmtDay(tr.start, { day: 'numeric', month: 'short' }))} to ${esc(fmtDay(tr.end, { day: 'numeric', month: 'short', year: 'numeric' }))}, ${days.length} days` : `${all.length} places`}</div></div>
+        <button class="btn small" data-album aria-label="Trip photos" data-tip="Picture a day: the group’s photos for each day">${icon('camera')}Photos</button>
         <button class="btn small primary" data-add>${icon('plus')}Add</button>
       </header>
 
@@ -85,6 +105,7 @@ export function render() {
         <button class="chip" data-groups>Edit groups</button>
       </div>` : ''}
       ${filter === 'removed' ? `<p class="hint" style="margin:0 16px 12px">Places someone removed. Only admins see this list. Open one to bring it back or delete it for good.</p>` : ''}
+      ${day !== 'all' && day !== 'none' ? stayLineHtml(day) + dayStripHtml(day) : ''}
       <div data-list></div>
     </div>`;
 
@@ -164,6 +185,10 @@ function itemHtml(p, { stops, index, reorder, count }) {
 
 function bind(el) {
   el.querySelectorAll('[data-add]').forEach((b) => b.onclick = () => openImport());
+  el.querySelector('[data-album]').onclick = () => openAlbum();
+  el.querySelector('[data-open-stay]')?.addEventListener('click', (e) => { const id = e.currentTarget.dataset.openStay; emit('go', 'map'); import('./stays.js').then((m) => m.openStay(id)); });
+  el.querySelectorAll('[data-open-day-photos]').forEach((b) => b.onclick = () => openDayPhotos(b.dataset.openDayPhotos));
+  el.querySelectorAll('[data-view-photo]').forEach((b) => b.onclick = () => { const l = photosOn(day); openViewer(l, l.findIndex((p) => p.id === +b.dataset.viewPhoto)); });
   el.querySelectorAll('[data-day]').forEach((b) => b.onclick = () => {
     day = b.dataset.day;
     reordering = false;

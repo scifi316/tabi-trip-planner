@@ -22,7 +22,7 @@ const distanceText = (loc) => {
 };
 const groupToday = (id) => groupsOn(today()).find((g) => g.memberIds.includes(+id));
 
-['locations', 'users', 'subgroups', 'expenses', 'places', 'mypos', 'reaction'].forEach((e) => on(e, () => {
+['locations', 'users', 'subgroups', 'expenses', 'places', 'mypos', 'reaction', 'emojis'].forEach((e) => on(e, () => {
   if (listSheet && !listSheet.closed) renderList();
   if (friendSheet && !friendSheet.closed) renderFriend();
 }));

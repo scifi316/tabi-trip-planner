@@ -183,6 +183,68 @@ export function openDb(dataDir) {
     CREATE INDEX IF NOT EXISTS reactions_to ON reactions(to_id, id);
     CREATE INDEX IF NOT EXISTS reactions_from ON reactions(from_id, id);
 
+    -- Web Push: one row per device that turned on "notify me when Tabi is closed".
+    CREATE TABLE IF NOT EXISTS push_subs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      ua TEXT,
+      created_at INTEGER NOT NULL,
+      last_ok_at INTEGER,
+      last_error TEXT,
+      fails INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id);
+
+    -- Custom emojis anyone can add (128×128 at most), used like :ramen: in reactions.
+    CREATE TABLE IF NOT EXISTS custom_emojis (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      file TEXT NOT NULL,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL,
+      deleted_at INTEGER
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS custom_emojis_name ON custom_emojis(name) WHERE deleted_at IS NULL;
+
+    -- Picture a day: up to 5 photos per trip day, from anyone. Files live in blob storage (R2).
+    CREATE TABLE IF NOT EXISTS daily_photos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      day TEXT NOT NULL,
+      user_id INTEGER,
+      file TEXT NOT NULL,
+      thumb TEXT NOT NULL,
+      width INTEGER, height INTEGER,
+      bytes INTEGER NOT NULL DEFAULT 0,
+      caption TEXT,
+      taken_at INTEGER,
+      created_at INTEGER NOT NULL,
+      deleted_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS daily_photos_day ON daily_photos(day);
+    -- Stays: where the group sleeps (hotel, Airbnb, ryokan), shown on the map as "home".
+    CREATE TABLE IF NOT EXISTS stays (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      address TEXT,
+      lat REAL NOT NULL,
+      lng REAL NOT NULL,
+      start_day TEXT,
+      end_day TEXT,
+      notes TEXT,
+      created_by INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER,
+      deleted_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS photo_likes (
+      photo_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      PRIMARY KEY (photo_id, user_id)
+    );
+
     -- One-time links an admin makes so someone who forgot their password can set a new one.
     CREATE TABLE IF NOT EXISTS password_resets (
       token_hash TEXT PRIMARY KEY,

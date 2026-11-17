@@ -4,7 +4,7 @@ import { esc, icon, avatar, toast, ago, openSheet } from './ui.js';
 import { deviceSending, syncWatcher, isWatching, requestWake } from './location.js';
 import { planPack, downloadPack, mapCacheInfo, clearMapCache } from './offline.js';
 import { openImport } from './add.js';
-import { meButton, applyTheme } from './main.js';
+import { meButton, applyTheme, hardReload } from './main.js';
 import { resetTours, maybeStartTour } from './tour.js';
 import { openGroups } from './groups.js';
 import { getMap } from './map.js';
@@ -12,6 +12,7 @@ import { prefsHtml, bindPrefs } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
 import { ownTracksBadge } from './owntracks.js';
 import { recoveryAction, recoveryStatus, openRecoverySetup, openResetLink } from './account.js';
+import { pushBlockHtml, bindPushBlock } from './push.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -24,7 +25,7 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery', 'emojis', 'photos', 'stays'].forEach((e) => on(e, maybeRender));
 // Keep "3 min ago" honest while Settings is open
 setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 
@@ -116,7 +117,9 @@ export function render() {
     </div></section>
 
     <section class="section" data-section="notifications"><h2>Notifications</h2><div class="card">
-      <div class="row stack"><div class="help">New ones show as a red ! on your picture at the top left. Tap it to read them. Choose what you want to hear about:</div></div>
+      <div class="row stack"><div class="help">New ones show as a red ! on your picture at the top left. Tap it to read them.</div></div>
+      ${pushBlockHtml()}
+      <div class="row stack"><div class="help">Choose what you want to hear about:</div></div>
       ${prefsHtml()}
     </div></section>
 
@@ -160,6 +163,8 @@ export function render() {
         ${admin ? seg('veto', tr.vetoRule, [['single', 'One veto removes it'], ['majority', 'Majority'], ['off', 'Counts as a no']]) : `<div class="help">${({ single: 'One veto removes a place.', majority: 'A place is removed when over half the group vetoes it.', off: 'A veto counts as a no vote.' })[tr.vetoRule]}</div>`}</div>
       <div class="row"><div class="grow"><div class="label">Auto-confirm</div><div class="help">Confirm a place automatically when this many people want to go. 0 turns it off.</div></div>
         ${admin ? `<input class="input num" type="number" min="0" max="50" data-trip="autoConfirm" value="${tr.autoConfirm || 0}" style="width:76px">` : `<b class="num">${tr.autoConfirm || 'Off'}</b>`}</div>
+      <div class="row"><div class="grow"><div class="label">Picture a day reminder</div><div class="help">If a day has no photo yet, everyone gets a nudge at this time (trip time zone).${state.photos?.list?.length ? ` ${state.photos.list.length} photos so far${admin ? `, ${Math.max(1, Math.round((state.photos.bytes || 0) / 1048576))} MB of ${Math.round((state.photos.limit || 0) / 1048576)} MB used` : ''}.` : ''}</div></div>
+        ${admin ? `<select class="input" data-trip="photoReminder" style="width:96px">${['off', '17:00', '18:00', '19:00', '20:00', '21:00'].map((v) => `<option value="${v}" ${v === (tr.photoReminder || '19:00') ? 'selected' : ''}>${v === 'off' ? 'Off' : v}</option>`).join('')}</select>` : `<b class="num">${esc(tr.photoReminder === 'off' ? 'Off' : tr.photoReminder || '19:00')}</b>`}</div>
       <div class="row"><div class="grow"><div class="label">Trip currency</div><div class="help">Balances are added up in this currency. It’s fixed once expenses exist.</div></div>
         ${admin && !state.expenses.size ? `<select class="input" data-trip="currency" style="width:96px">${(state.config.currencies || ['JPY']).map((c) => `<option ${c === tr.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>` : `<b>${esc(tr.currency || 'JPY')}</b>`}</div>
     </div></section>
@@ -167,6 +172,12 @@ export function render() {
     <section class="section"><h2>Group</h2><div class="card">
       <div class="row"><div class="grow"><div class="label">Subgroups</div><div class="help">${state.subgroups.length ? `${state.subgroups.length} subgroup${state.subgroups.length > 1 ? 's' : ''}` : 'For when the group splits up for a day or two.'}</div></div>
         <button class="btn small" data-subgroups>${icon('users')}Manage</button></div>
+      <div class="row"><div class="grow"><div class="label">Where we’re staying</div><div class="help">${(state.stays || []).length ? (state.stays || []).map((x) => esc(x.name)).join(', ') : 'Add your hotel or Airbnb. It shows on the map as “Home”.'}</div></div>
+        <button class="btn small" data-stays>${icon('home')}Stays</button></div>
+      <div class="row"><div class="grow"><div class="label">Custom emojis</div><div class="help">${(state.customEmojis || []).length
+        ? `${(state.customEmojis || []).slice(0, 8).map((e) => `<img class="cemoji inline" src="${esc(e.url)}" alt=":${esc(e.name)}:">`).join('')} ${state.customEmojis.length} made by the group, for reactions.`
+        : 'Add your own, like a photo of the group or a mascot, to send as reactions.'}</div></div>
+        <button class="btn small" data-emojis>${icon('smile')}Emojis</button></div>
       ${state.users.map((u) => `
         <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
           <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${admin && !u.hasRecovery ? ', no recovery code' : admin && u.recoverySaved === false ? ', recovery code not saved yet' : ''}</div></div>
@@ -204,7 +215,10 @@ export function render() {
       <div data-act-list>${activityListHtml()}</div>
     </div></section>
 
-    <p class="faint" style="font-size:12px;margin:0 20px 10px">Tabi ${esc(state.config.version || '')}. Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
+    <div class="about-row"><div class="grow"><div class="label">Tabi ${esc(state.config.version || '')}</div>
+      <div class="help num">Build ${esc((document.querySelector('meta[name=tabi-build]')?.content || '').split('-').pop())}${state.config.server ? `, from ${esc(state.config.server)}` : ''}${state.config.build && state.config.build !== document.querySelector('meta[name=tabi-build]')?.content ? ' <b>(an update is waiting)</b>' : ''}</div></div>
+      <button class="btn small" data-hard-reload data-tip="Clears Tabi’s offline copy of the app and loads the newest version. Your data, saved maps and sign-in stay.">Reload app</button></div>
+    <p class="faint" style="font-size:12px;margin:0 20px 10px">Map data © OpenStreetMap contributors, tiles by OpenFreeMap / OpenMapTiles, search by Photon. Directions open in Google Maps.</p>
   </div>`;
 
   bind(el);
@@ -228,6 +242,9 @@ function bind(el) {
   q.oninput = onActivitySearch;
   q.onkeydown = (e) => { if (e.key === 'Escape' && q.value) { q.value = ''; onActivitySearch({ target: q }); } };
   renderActivityList();
+  el.querySelector('[data-hard-reload]')?.addEventListener('click', () => hardReload());
+  el.querySelector('[data-stays]')?.addEventListener('click', () => import('./stays.js').then((m) => m.openStays()));
+  el.querySelector('[data-emojis]')?.addEventListener('click', () => import('./emoji.js').then((m) => m.openEmojiPicker({ title: 'Custom emojis', onPick: null })));
   el.querySelectorAll('[data-recovery]').forEach((b) => b.onclick = () => recoveryAction());
   el.querySelector('[data-recovery-new]')?.addEventListener('click', () => openRecoverySetup({ replacing: true }));
   el.querySelector('[data-leave]').onclick = leaveSheet;
@@ -241,6 +258,7 @@ function bind(el) {
   });
   el.querySelectorAll('[data-photo]').forEach((b) => b.onclick = () => openPhotoEditor());
   bindPrefs(el);
+  bindPushBlock(el);
   el.querySelector('[data-signout]').onclick = async () => {
     try { await api('/api/logout', { method: 'POST' }); } catch { /* offline */ }
     signOutLocal();

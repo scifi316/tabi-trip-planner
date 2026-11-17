@@ -29,6 +29,9 @@ export const state = {
   notifications: [],
   unread: 0,
   reactions: [], // recent emoji reactions to or from me, newest first
+  customEmojis: [], // { name, url, by, at }
+  photos: { list: [], bytes: 0, limit: 0 }, // picture a day
+  stays: [], // where the group sleeps
   config: {},
   conn: 'offline', // online | offline | connecting
   outbox: JSON.parse(localStorage.getItem(LS.outbox) || '[]'),
@@ -40,7 +43,7 @@ function persist() {
     localStorage.setItem(LS.state, JSON.stringify({
       me: state.me, trip: state.trip, users: [...state.users, ...(state.formerUsers || [])], places: [...state.places.values()], subgroups: state.subgroups,
       expenses: [...state.expenses.values()], locations: state.locations, activity: state.activity.slice(0, 30), config: state.config,
-      notifications: state.notifications.slice(0, 60), unread: state.unread, reactions: state.reactions.slice(0, 60),
+      notifications: state.notifications.slice(0, 60), unread: state.unread, reactions: state.reactions.slice(0, 60), customEmojis: state.customEmojis, photos: state.photos, stays: state.stays,
     }));
   } catch { /* quota: ignore */ }
 }
@@ -53,7 +56,7 @@ export function loadCached() {
     if (!c || !c.me) return false;
     setUsers(c.users);
     Object.assign(state, { me: c.me, trip: c.trip, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
-      notifications: c.notifications || [], unread: c.unread || 0, reactions: c.reactions || [] });
+      notifications: c.notifications || [], unread: c.unread || 0, reactions: c.reactions || [], customEmojis: c.customEmojis || [], photos: c.photos || { list: [], bytes: 0, limit: 0 }, stays: c.stays || [] });
     state.places = new Map((c.places || []).map((p) => [p.id, p]));
     state.expenses = new Map((c.expenses || []).map((e) => [e.id, e]));
     for (const o of state.outbox) applyLocal(o.op, o.data);
@@ -110,10 +113,11 @@ export function connect() {
   if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
   setConn('connecting');
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const sock = new WebSocket(`${proto}://${location.host}/ws`);
+  const build = document.querySelector('meta[name=tabi-build]')?.content || '';
+  const sock = new WebSocket(`${proto}://${location.host}/ws${/^\d/.test(build) ? `?build=${encodeURIComponent(build)}` : ''}`);
   ws = sock;
   let opened = false;
-  sock.onopen = () => { opened = true; retry = 0; };
+  sock.onopen = () => { opened = true; retry = 0; if (document.hidden) sock.send('{"t":"vis","v":false}'); };
   sock.onmessage = (e) => handle(JSON.parse(e.data));
   sock.onclose = () => {
     if (ws !== sock) return;
@@ -140,6 +144,9 @@ function handle(m) {
       state.subgroups = m.subgroups || [];
       state.notifications = m.notifications || []; state.unread = m.unread || 0;
       state.reactions = m.reactions || [];
+      state.customEmojis = m.customEmojis || [];
+      state.photos = m.photos || { list: [], bytes: 0, limit: 0 };
+      state.stays = m.stays || [];
       state.expenseReset = m.expenseReset || null;
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
@@ -147,7 +154,7 @@ function handle(m) {
       setConn('online');
       flushOutbox();
       persistSoon();
-      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses', 'notifs'].forEach((e) => emit(e));
+      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses', 'notifs', 'photos', 'stays'].forEach((e) => emit(e));
       break;
     case 'ack': {
       const idx = state.outbox.findIndex((o) => o.id === m.id);
@@ -190,6 +197,9 @@ function handle(m) {
       state.reactions.length = Math.min(state.reactions.length, 60);
       emit('reaction', { r: m.r, all: !!m.all }); persistSoon(); break;
     }
+    case 'stays': state.stays = m.stays || []; emit('stays'); persistSoon(); break;
+    case 'photos': state.photos = { list: m.list || [], bytes: m.bytes || 0, limit: m.limit || 0 }; emit('photos'); persistSoon(); break;
+    case 'emojis': state.customEmojis = m.list || []; emit('emojis'); persistSoon(); break;
     case 'notif.gone': {
       const gone = new Set(m.ids || []);
       state.notifications = state.notifications.filter((n) => !gone.has(n.id));
@@ -384,3 +394,6 @@ export function voteCounts(p) {
   for (const v of Object.values(p.votes || {})) if (c[v] != null) c[v]++;
   return c;
 }
+
+// Tell the server whether the app is on screen: when it isn't, notifications also go out as pushes.
+document.addEventListener('visibilitychange', () => { if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'vis', v: !document.hidden })); });

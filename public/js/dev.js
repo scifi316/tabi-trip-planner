@@ -98,6 +98,21 @@ function render() {
 }
 const rowCls = (e) => (freshIds.has(e.id) ? 'new' : '');
 
+// Every server's version, from what each one last wrote to storage. A backup that's behind serves
+// the old app whenever it takes over (during a deploy, for example).
+function serversHtml(h, version) {
+  const list = Object.entries(h.servers || {});
+  if (!list.length) return '';
+  const stale = (s) => Date.now() - s.at > 15 * 60e3;
+  const behind = list.filter(([, s]) => !stale(s) && s.version !== version);
+  return `<h4 style="margin:12px 0 6px;font-size:13px">Servers</h4>
+    <div class="tbl-wrap"><table><thead><tr><th>Server</th><th>Version</th><th>Role</th><th>Last heard</th></tr></thead><tbody>
+    ${list.map(([n, s]) => `<tr><td>${esc(n)}${n === h.node ? ' <span class="hint">(this one)</span>' : ''}</td>
+      <td>${esc(s.version)} ${s.version !== version && !stale(s) ? '<span class="badge bad">different</span>' : ''}</td><td>${esc(s.role)}${s.priority ? ` (${esc(s.priority)})` : ''}</td><td>${ago(s.at)}</td></tr>`).join('')}
+    </tbody></table></div>
+    ${behind.length ? `<p class="hint" style="color:var(--bad,#c00)">Not every server runs ${esc(version)}. Run <span class="mono">bash /opt/tabi/deploy/update.sh</span> on ${behind.map(([n]) => esc(n)).join(', ')} too, or people can get the older app whenever it takes over.</p>` : ''}`;
+}
+
 // ---------- views ----------
 function viewOverview(v) {
   const o = overview;
@@ -114,12 +129,14 @@ function viewOverview(v) {
       <section class="panel"><h3>Failover</h3>${kv([
         ['This node', esc(h.node || '–')], ['Role', esc(h.role || '–')], ['Priority', esc(h.priority || '–')], ['Lease holder', esc(h.holder || '–')],
         ['Epoch', esc(h.epoch ?? '–')], ['Last lease renewal', ago(h.lastRenewOk)], ['Last snapshot to storage', ago(h.lastSnapshot)],
-        ['Error', h.error ? `<span class="badge bad">${esc(h.error)}</span>` : 'none']])}</section>
+        ['Error', h.error ? `<span class="badge bad">${esc(h.error)}</span>` : 'none']])}
+        ${serversHtml(h, o.version)}</section>
       <section class="panel"><h3>Data</h3>${kv([
         ['People', c.users], ['Sessions', c.sessions], ['Places', `${c.places} (+${c.removed} previously interested)`],
         ['By status', Object.entries(c.byStatus).map(([k, n]) => `${esc(k)} ${n}`).join(', ') || '–'], ['Votes', c.votes], ['Subgroups', c.subgroups],
         ['Expenses', `${c.expenses} (${c.privateExpenses} private), ${c.payments} payments`], ['Receipts', `${c.attachments} (${bytes(c.attachmentBytes)})`],
-        ['Search cache entries', c.geocache], ['Activity items', c.activity]])}</section>
+        ['Search cache entries', c.geocache], ['Activity items', c.activity],
+        ['Lock-screen notifications', c.push ? `${c.push.n} device${c.push.n === 1 ? '' : 's'} (${c.push.people} people)${c.push.failing ? `, <span class="badge warn">${c.push.failing} failing</span>` : ''}${c.push.lastOk ? `, last delivered ${ago(c.push.lastOk)}` : ''}` : '–']])}</section>
       <section class="panel"><h3>Settings</h3>${kv([
         ['Private-link gate', yes(o.features.privateLinkGate)], ['Cloudflare Tunnel', yes(o.features.tunnel)], ['Durable storage (R2)', yes(o.features.durableStorage)],
         ['Failover', yes(o.features.ha)], ['Behind proxy', yes(o.features.trustProxy)], ['Session length', `${o.features.sessionDays} days`],
@@ -133,8 +150,8 @@ function viewOverview(v) {
       <section class="panel wide" id="exp-panel"><h3>Expenses</h3><p class="hint">Loading…</p></section>
     </div>
     <h3 style="margin:20px 0 8px;font-size:14px;color:var(--ink-2)">Connected right now (${o.clients.length})</h3>
-    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Connected</th><th>IP</th><th>Device</th></tr></thead><tbody>
-      ${o.clients.map((cl) => `<tr><td>${esc(cl.user)}</td><td>${ago(cl.since)}</td><td class="mono">${esc(cl.ip || '')}</td><td class="wrap">${esc(cl.ua)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="4">Nobody has the app open</td></tr>'}
+    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Connected</th><th>App build</th><th>IP</th><th>Device</th></tr></thead><tbody>
+      ${o.clients.map((cl) => `<tr><td>${esc(cl.user)}</td><td>${ago(cl.since)}</td><td class="mono">${cl.build ? `${esc(cl.build)} ${cl.current ? '' : '<span class="badge warn">out of date</span>'}` : '–'}</td><td class="mono">${esc(cl.ip || '')}</td><td class="wrap">${esc(cl.ua)}</td></tr>`).join('') || '<tr class="empty-row"><td colspan="5">Nobody has the app open</td></tr>'}
     </tbody></table></div>`;
   renderExpensePanel();
   renderAccountsPanel();

@@ -24,12 +24,27 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - **Money**: what you owe each other, your expenses together, and settle up.
   - **Say hi**: send them 👋 ❤️ 😂 🎉 🙏 👍 😮 or 🍻, with the last few you've swapped.
 - [x] **Emoji reactions**: what someone sends pops up at the top of your screen with quick replies, floats up the screen, and pops up from their spot on the map. *Wave to everyone* in the Friends list greets the whole trip. Up to 40 a minute per person; they can be switched off under Notifications in Settings.
+- [x] **Custom emojis**: anyone can add one with a name like `:ramen:`.
+  - Pick a picture, move and zoom it in a square (see-through backgrounds are kept), and it's saved at 128×128, 64 KB at most.
+  - Send them from the *+* in a friend's card; the ones you use often get their own buttons.
+  - Up to 100 per trip. Whoever added one, or an admin, can remove it.
 - [x] **Clusters**: as you zoom out, nearby places group into one marker with a count and a ring split by status colour. Tapping one zooms to fit everything in it. If they're all at the same spot, it lists them instead. The place you have open always stays visible, and the day's numbered stops stay separate until you zoom out past city level.
 - [x] Markers stay pinned to their spot while you zoom and pan.
 - [x] **Follow mode**: tap the locate button twice, or tap your blue dot, and the map keeps you centred as you move. Tap a friend on the map, or *Follow* on their card, to keep them centred. Dragging the map or *Stop* ends it.
 - [x] **Show everyone** map button fits everyone who's sharing their location, alongside *fit all places*. Fitting, flying to a place and pinpointing a friend all leave room for whatever card or panel is open: at the bottom on phones, at the side on computers.
 - [x] Tooltips on icon buttons, shown with a mouse or keyboard only (never for touch). They also work on laptops with a touchscreen, which hid them before 1.6.
 - [x] **Phones held sideways**: navigation becomes a slim rail on the left, search, friends and the map buttons share one row along the top, and cards dock beside the map instead of covering it.
+- [x] **Stays (where we're sleeping)**: add the hotel, Airbnb or ryokan by address, a pasted map link, or by setting it on the map.
+  - Each stay has the nights it covers, so a multi-city trip can have several.
+  - Stays show as houses on the map, never clustered. The one for tonight is marked **Home**.
+  - The **Home** chip flies to tonight's stay. Its card has *Directions home*, the address and notes.
+  - Japanese addresses with building numbers that aren't on the map fall back to the neighbourhood, and the app says the result is approximate.
+- [x] **Picture a day**: anyone can add the day's photo, up to 5 for each trip day.
+  - Add from the camera button on the day strip, or from the itinerary.
+  - Photos are shrunk in the browser (2048 px, a few hundred KB) and location and camera data are removed.
+  - Likes: the most liked photo becomes the day's cover.
+  - Captions, a full-screen viewer, and an album of every day that downloads as one zip.
+  - If a day has no photo by the evening (19:00 by default; admins can change or turn this off), everyone gets a nudge.
 - [x] Layer filter to choose which statuses show on the map.
 - [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
@@ -85,9 +100,11 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - anyone adds or imports places (off to start with)
   - admins only: someone removes a place, so it can be brought back from Previously interested
   - someone sends you an emoji reaction
+  - picture a day: someone adds a photo, and the evening reminder
 
   Unread ones show as a red **!** on your picture, and as a badge on the home-screen icon where the phone supports it. Tap your picture to read them; tapping one takes you to the place, expense, subgroup or person. Repeats of the same thing within 15 minutes update one notification instead of piling up.
   - **Dismiss** one with ×, or **Clear all** (it asks first). Either way they're gone from all your devices.
+  - **On the lock screen when Tabi is closed (Web Push)**, switched on per device in Settings. The same per-kind choices apply, and pushes only go out when Tabi isn't on screen. Works in Chrome, Edge and Firefox on computers and Android, and on iPhone (iOS 16.4+) from the Home Screen app. No accounts or services to set up.
   - **On a computer**, the rail has a **Notifications** page with an unread count: grouped by day, All or Unread, *Mark all read*, *Clear all*, and *Show older* back through everything kept. Clicking your picture opens a short list right next to it, with *See all notifications*.
 
 ### Getting places in
@@ -100,6 +117,11 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Light and dark mode, either following the phone or set by hand.
 - [x] Offline: the app opens with no connection. Map areas you've viewed are cached, and you can **save maps around all your places** ahead of time. Receipt images are cached too.
 - [x] **First-run tips** for each screen, which can be skipped and replayed from Settings. People who already finished them get a short "what's new" tour once.
+- [x] **Staying up to date**: open apps reload themselves when a new version is deployed.
+  - If a browser keeps loading an old copy, the next try clears Tabi's offline copy first.
+  - If even that fails, the app stops and reports it to the developer console.
+  - Settings shows the version, the build and which server answered, with a *Reload app* button.
+- [x] Phones held sideways can rotate the installed app too (it was locked to portrait before 1.7).
 - [x] Export the trip as KML or JSON.
 
 ### Developer console
@@ -111,6 +133,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - **Places:** the full table, including removed places and who removed them.
   - **Activity:** sign-ins (including failed ones), changes and connections.
   - **Network:** the server's calls to search, R2, Google and exchange rates.
+  - **Servers:** the version each server runs, flagged when they differ (a backup on older code serves the old app whenever it takes over). The *Connected right now* list shows each person's app build, flagging out-of-date ones.
   - **App errors:** errors from people's browsers (up to 30 per person per server run), with the screen, app build and browser, so "this button doesn't work" can be traced.
   - **Server log.**
 
@@ -141,8 +164,8 @@ Updates never touch your data: the database stays on the server's disk outside t
 
 Ideas, roughly in priority order:
 
-- [ ] **Push notifications when Tabi is closed** (Web Push with VAPID keys; works on Android and desktop browsers, and on iPhone only from the home-screen app, iOS 16.4+). The notifications above already exist in the app; this would deliver them to the lock screen too, using the same per-kind switches plus a per-device on/off.
-- [ ] **Messages**: short in-app messages between people, building on emoji reactions.
+- [ ] **Group chat**: trip and subgroup chats with photos, GIFs (KLIPY search, or uploads) and reactions. Feasible on the current servers; see [docs/FEASIBILITY.md](docs/FEASIBILITY.md).
+- [ ] **Games**: Connect 4 and pool against each other, with spectators. Feasible too (pool needs deterministic physics); see [docs/FEASIBILITY.md](docs/FEASIBILITY.md).
 - [ ] **Notification digests**: a quieter mode that bundles plan changes into one notification a day.
 - [ ] **Show balances in each person's home currency** (USD, EUR and so on) alongside yen, using the converter's saved home currency.
 - [ ] **Better receipt reading**: try a cloud OCR option for faded thermal receipts, and recognise the tax-rate markers on Japanese receipts (※ and 軽 for the 8% rate) to split tax exactly.
@@ -168,6 +191,7 @@ server/auth.js     Cookie sessions with an in-memory cache, gate token
 server/ha.js       Leader lease, snapshots, failover and hand-back
 server/s3.js       Minimal S3/R2 client;  server/blobs.js  receipt and profile photo storage
 server/notify.js   Notifications: who's told what, merging repeats, per-person switches
+server/push.js     Web Push: encryption (RFC 8291) and signing (RFC 8292) with Node’s own crypto, no extra dependencies
 server/images.js   Reads image sizes from file headers (profile photo checks)
 server/money.js    Expense validation;  server/links.js  map-link parsing;  server/db.js  schema
 public/            No-build PWA (plain ES modules)
@@ -184,11 +208,16 @@ public/            No-build PWA (plain ES modules)
   js/receipt.js    Receipt text parser;  js/ocr.js  on-device OCR
   js/tour.js       First-run tips
   js/settings.js   Account, devices, sharing, theme, offline maps, trip admin
+  js/push.js       Lock-screen notifications (Web Push), per device
+  js/photos.js     Picture a day: adding, viewer, album
+  js/stays.js      Where we're staying: houses on the map, Home
+  js/emoji.js      Custom emojis: editor and picker
   sw.js            Service worker
 deploy/setup.sh    One-command server setup (primary or backup);  deploy/update.sh  pull and rebuild
 deploy/droplet/    DigitalOcean primary (compose);  deploy/home/  home-server backup (compose)
 fly.toml           Alternative primary on Fly.io (Tokyo)
 docs/HOSTING.md    Domain, private link, DigitalOcean, home backup, failover runbook
+docs/FEASIBILITY.md  Group chat, Connect 4 and pool: what they'd take
 ```
 
 ## Configuration

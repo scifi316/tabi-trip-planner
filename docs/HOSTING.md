@@ -175,7 +175,7 @@ After the first visit, each phone remembers access for 400 days. "Add to Home Sc
 
 ## Updating
 
-On the droplet first, then the home server:
+On the droplet first, then **the home server too, every time**:
 
 ```bash
 bash /opt/tabi/deploy/update.sh
@@ -187,6 +187,8 @@ It does three things:
 3. Rebuilds and restarts.
 
 The serving machine uploads a final snapshot and keeps its lease while it restarts, so updates don't trigger a failover.
+
+**Why the home server needs updating too:** if the droplet is down for a moment (a deploy that takes longer, a restart), the home server can take over, and whoever opens Tabi then gets the version the home server runs. If that's older, people can end up on the old app. Since 1.7 both servers note their version in R2: the developer console shows each one under *Overview → Failover → Servers* and flags a difference, and the server log says `[ha] version mismatch: …`. The app also retries an update on its own, and *Settings → Reload app* clears a browser's offline copy of Tabi.
 
 **Your data and sign-ins survive updates.** The database lives in `data/` on the server, outside the container. New versions only add tables or columns. Sessions are stored in the database, so nobody has to sign up or sign in again. Profile photos are stored like receipts: on the server's disk and in R2 under `blobs/`, so the home backup has them too.
 
@@ -264,9 +266,18 @@ Nobody has to make a new account any more.
 | `lease check failed: … 404` | The bucket name is wrong | Fix `S3_BUCKET` |
 | `stepping down: lease changed while renewing` (immediately after starting) | Version 1.1.0 handled R2's version tags wrongly | Update with `bash /opt/tabi/deploy/update.sh` |
 | `Provided Tunnel token is not valid` | Wrong `TUNNEL_TOKEN` | Paste the `eyJ…` token from the tunnel's install command |
+| `[ha] version mismatch: home runs 1.6.0 …` | One server wasn't updated | Run `bash /opt/tabi/deploy/update.sh` on that server |
+| `[push] made the Web Push key pair` | First start of 1.7: normal, once | Nothing |
 | `failed to sufficiently increase receive buffer size` | Harmless warning | Optional: `printf 'net.core.rmem_max=7500000\nnet.core.wmem_max=7500000\n' > /etc/sysctl.d/99-tunnel.conf && sysctl --system` |
 
 After editing `.env`, run `docker compose up -d --force-recreate` in the same folder.
+
+**Someone's browser keeps showing an older version.**
+1. Have them open *Settings*. The line above the map credits shows the version, the build and which server answered.
+2. Tap *Reload app*. This clears Tabi's offline copy of the app (not their data, saved maps or sign-in) and loads the newest version.
+3. If it still shows the old version, check the developer console's *Servers* table: the other server is probably behind. Run `update.sh` there.
+
+Since 1.7 the app retries by itself a minute apart, clearing its offline copy on the second try. If it still can't get the new version it reports it under *App errors* in the developer console.
 
 ## Restoring an older backup
 
@@ -297,7 +308,24 @@ These environment variables go in `.env` and control timing.
 | `HA_BACKUP_EXTRA_MS` | 15000 | Extra time a backup waits before taking over |
 | `HA_FAILBACK_MS` | 120000 | How long the primary must be healthy before asking for its role back |
 | `HA_SNAPSHOT_MS` | 15000 | How often the leader uploads a snapshot when data changed |
+| `PHOTO_LIMIT_MB` | 2048 | Total space for Picture a day photos; uploads stop with a clear message at this size |
 
 Worst-case takeover time is TTL + grace + backup extra, which is about 60 seconds.
 
 You can check a local failover drill against a mock R2 with `npm run test:ha`.
+
+## Notifications on the lock screen (Web Push)
+
+Since 1.7 people can get Tabi's notifications on the lock screen while Tabi is closed: *Settings → Notifications → When Tabi is closed*, per device. There's nothing to set up on the servers.
+
+- **Keys:** Tabi makes its signing key pair on first start and keeps it in the database, so both servers use the same one and devices keep working after a failover. To use your own, set `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` on both machines.
+- **Where pushes go:** to each browser's own push service (Google for Chrome and Android, Apple for iPhone and Safari, Mozilla for Firefox, Microsoft for Edge). Messages are end-to-end encrypted for the device, and the server only sends to those services' addresses.
+- **iPhone:** iOS 16.4 or later, and only when Tabi is opened from the Home Screen (Share → Add to Home Screen). The switch explains this on iPhones that haven't added it.
+- **When:** only when none of that person's Tabi windows is on screen; otherwise the app shows it as usual. The same per-kind choices apply.
+- **Dead devices:** devices the push service reports as gone are removed automatically. The developer console shows how many devices have it on and when the last one was delivered.
+
+## Picture a day: storage
+
+Photos are shrunk in the browser before upload: at most 2048 px, WebP or JPEG, usually 200 to 600 KB, plus a small thumbnail, with location and camera data removed. They're stored like receipts: on the serving machine's disk and in R2 under `blobs/`, so the backup has them too.
+
+Five a day for a two-week trip is roughly 50 MB, a small part of R2's free 10 GB. `PHOTO_LIMIT_MB` caps the total. See [FEASIBILITY.md](FEASIBILITY.md) for the estimates, and for chat and games.
