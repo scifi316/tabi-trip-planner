@@ -221,6 +221,7 @@ Things to know:
 - **The key is separate from the private-link key**, and also gets its holder past the private link.
 - **Without `DEV_KEY` set**, `/dev` doesn't exist.
 - **Live history is kept in memory**, so the event lists start fresh when the server restarts.
+- **App errors** (since 1.6) lists JavaScript errors from people's browsers, at most 30 per person per server run, with their screen size, app build and browser. Nothing else is sent.
 - **Existing servers:** `update.sh` adds a generated `DEV_KEY` to `.env` the first time it runs and prints a reminder. Copy the same line into the other server's `.env` so the key works whichever machine is serving. To see it: `grep DEV_KEY /opt/tabi/deploy/droplet/.env`.
 
 ## Forgotten passwords and removed members
@@ -228,6 +229,8 @@ Things to know:
 Nobody has to make a new account any more.
 
 - **With a recovery code:** after updating to 1.5, everyone is asked once to set one up ("Protect your account"). If they later forget their password, they choose *Forgot password?* on the sign-in screen and enter their name, code and a new password. They get a fresh code, and their other devices are signed out.
+  - **Since 1.6** a new code can be viewed again in *Settings → Account recovery* until they confirm they've saved it, so closing the sheet too early no longer loses it. The readable copy is deleted the moment they choose *I've saved it, hide it*.
+  - People who made a code on 1.5 are asked once whether they saved it. Nothing changes for their accounts or codes.
 - **Without one:**
   1. They tap *Ask a trip admin*, which sends the admins a notification.
   2. An admin opens *Settings → People → their name → Reset link* and sends them the link privately.

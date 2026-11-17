@@ -11,6 +11,7 @@ export const NOTIFY_KINDS = {
   newPlaces: { default: false }, // anyone adds or imports places
   removed: { default: true, admin: true }, // someone removes a place (it goes to Previously interested)
   help: { default: true, admin: true },    // someone can't sign in and asks for a password reset link
+  reactions: { default: true },            // someone sends you an emoji (👋)
   // Always on, not shown in Settings: changes to your own account's password or recovery code.
   security: { default: true, locked: true },
 };
@@ -87,7 +88,13 @@ export function createNotifier({ db, deliver, now = Date.now }) {
     return unread(userId);
   }
   const clear = (userId) => db.prepare('DELETE FROM notifications WHERE user_id = ? AND read_at IS NOT NULL').run(userId);
+  const clearAll = (userId) => db.prepare('DELETE FROM notifications WHERE user_id = ?').run(userId);
+  function dismiss(userId, ids) {
+    const st = db.prepare('DELETE FROM notifications WHERE user_id = ? AND id = ?');
+    for (const id of ids.slice(0, 500)) st.run(userId, +id);
+  }
+  const older = (userId, before, limit = 40) => db.prepare('SELECT * FROM notifications WHERE user_id = ? AND id < ? ORDER BY id DESC LIMIT ?').all(userId, before, limit).map(rowOut);
   const purgeOld = () => db.prepare('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?').run(now() - 45 * 864e5);
 
-  return { notify, list, unread, markRead, clear, purgeOld };
+  return { notify, list, unread, markRead, clear, clearAll, dismiss, older, purgeOld };
 }

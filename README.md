@@ -22,11 +22,14 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - **Walk there**: walking directions in Google Maps.
   - **Their plan for today**, and their full itinerary (shared stops plus their subgroup's).
   - **Money**: what you owe each other, your expenses together, and settle up.
+  - **Say hi**: send them 👋 ❤️ 😂 🎉 🙏 👍 😮 or 🍻, with the last few you've swapped.
+- [x] **Emoji reactions**: what someone sends pops up at the top of your screen with quick replies, floats up the screen, and pops up from their spot on the map. *Wave to everyone* in the Friends list greets the whole trip. Up to 40 a minute per person; they can be switched off under Notifications in Settings.
 - [x] **Clusters**: as you zoom out, nearby places group into one marker with a count and a ring split by status colour. Tapping one zooms to fit everything in it. If they're all at the same spot, it lists them instead. The place you have open always stays visible, and the day's numbered stops stay separate until you zoom out past city level.
 - [x] Markers stay pinned to their spot while you zoom and pan.
 - [x] **Follow mode**: tap the locate button twice, or tap your blue dot, and the map keeps you centred as you move. Tap a friend on the map, or *Follow* on their card, to keep them centred. Dragging the map or *Stop* ends it.
-- [x] **Show everyone** map button fits everyone who's sharing their location, alongside *fit all places*. Both work on phones after a friend's card has been open, which they didn't before 1.5.
-- [x] Tooltips on icon buttons, shown with a mouse or keyboard only (never on touch screens).
+- [x] **Show everyone** map button fits everyone who's sharing their location, alongside *fit all places*. Fitting, flying to a place and pinpointing a friend all leave room for whatever card or panel is open: at the bottom on phones, at the side on computers.
+- [x] Tooltips on icon buttons, shown with a mouse or keyboard only (never for touch). They also work on laptops with a touchscreen, which hid them before 1.6.
+- [x] **Phones held sideways**: navigation becomes a slim rail on the left, search, friends and the map buttons share one row along the top, and cards dock beside the map instead of covering it.
 - [x] Layer filter to choose which statuses show on the map.
 - [x] Collapsible navigation: a bottom bar on phones, a side rail on wide screens.
 
@@ -81,8 +84,11 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - someone joins the trip, or you're made an admin
   - anyone adds or imports places (off to start with)
   - admins only: someone removes a place, so it can be brought back from Previously interested
+  - someone sends you an emoji reaction
 
   Unread ones show as a red **!** on your picture, and as a badge on the home-screen icon where the phone supports it. Tap your picture to read them; tapping one takes you to the place, expense, subgroup or person. Repeats of the same thing within 15 minutes update one notification instead of piling up.
+  - **Dismiss** one with ×, or **Clear all** (it asks first). Either way they're gone from all your devices.
+  - **On a computer**, the rail has a **Notifications** page with an unread count: grouped by day, All or Unread, *Mark all read*, *Clear all*, and *Show older* back through everything kept. Clicking your picture opens a short list right next to it, with *See all notifications*.
 
 ### Getting places in
 - [x] Google **My Maps**, by share link or KML/KMZ export. Layers are mapped to days automatically ("Day 2", "3/14", "2日目").
@@ -99,12 +105,13 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 ### Developer console
 - [x] `/dev`, behind its own `DEV_KEY`. It updates live. Its only actions are clearing expenses and making password reset links.
   - **Overview:** server health and failover state, data counts, settings, and who has the app open. It can also clear all expenses (type CLEAR) and undo the last clear.
-  - **Accounts:** everyone, current and former. It shows whether each person has a recovery code, their devices and when they were last seen, and can make a one-time password reset link. Useful if the only admin is the one locked out.
+  - **Accounts:** everyone, current and former. It shows whether each person's recovery code is saved, made but not saved yet, or missing, their devices and when they were last seen, and can make a one-time password reset link. Useful if the only admin is the one locked out.
   - **Locations:** a map with trails, plus every location update with its source, accuracy, battery and delay.
   - **OwnTracks:** every request with its result. Wrong token, unknown user, sharing off, or stored.
   - **Places:** the full table, including removed places and who removed them.
   - **Activity:** sign-ins (including failed ones), changes and connections.
   - **Network:** the server's calls to search, R2, Google and exchange rates.
+  - **App errors:** errors from people's browsers (up to 30 per person per server run), with the screen, app build and browser, so "this button doesn't work" can be traced.
   - **Server log.**
 
 ### Hosting and security
@@ -112,7 +119,9 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] **Private link gate**: without the secret key, the site returns "Not found".
 - [x] Cookie sessions (HttpOnly, Secure, SameSite), stored hashed, cached in memory, with sliding expiry. You can see your signed-in devices and sign the others out.
 - [x] **Forgot password, without losing the account:**
-  - **Recovery code:** a one-time code, 80 bits, stored hashed, that you set up in the app. Everyone is asked once after signing in (with "Remind me later"). With it, you set a new password from the sign-in screen and get a fresh code. Your other devices are signed out. It allows 5 wrong tries per name per hour.
+  - **Recovery code:** a one-time code, 80 bits, stored hashed, that you set up in the app. Everyone is asked after signing in (with "Remind me later", which waits 3 days). With it, you set a new password from the sign-in screen and get a fresh code. Your other devices are signed out. It allows 5 wrong tries per name per hour.
+    - A new code works straight away, and can be viewed again in *Settings → Account recovery* until you tick that you've saved it and choose *I've saved it, hide it*. Only then is the readable copy deleted. Until then Settings shows a reminder at the top, and the app reminds you after signing in.
+    - Codes made before 1.6 can't be shown again (only the hash was kept), so the app asks once whether you saved it: *Yes, I saved it* or *Make a new code*.
   - **No code? "Ask a trip admin"** notifies the admins without revealing whether the name exists. An admin makes a **reset link** in Settings → People. It's single-use, lasts 24 hours, and each new link cancels the last. You and the admin are both notified when it's used.
 - [x] **Removing someone, or leaving, keeps their account as a former member.** They can't sign in, but their expenses still count, so balances stay right; they show as "left the trip".
   - Admins can bring them back, or **merge** the old account into a new one if they rejoined under a different name.
@@ -132,7 +141,8 @@ Updates never touch your data: the database stays on the server's disk outside t
 
 Ideas, roughly in priority order:
 
-- [ ] **Push notifications when Tabi is closed** (Web Push with VAPID keys; works on Android and on iOS 16.4+ home-screen apps). The notifications above already exist in the app; this would deliver them to the lock screen too, plus "the group is leaving in 10 minutes".
+- [ ] **Push notifications when Tabi is closed** (Web Push with VAPID keys; works on Android and desktop browsers, and on iPhone only from the home-screen app, iOS 16.4+). The notifications above already exist in the app; this would deliver them to the lock screen too, using the same per-kind switches plus a per-device on/off.
+- [ ] **Messages**: short in-app messages between people, building on emoji reactions.
 - [ ] **Notification digests**: a quieter mode that bundles plan changes into one notification a day.
 - [ ] **Show balances in each person's home currency** (USD, EUR and so on) alongside yen, using the converter's saved home currency.
 - [ ] **Better receipt reading**: try a cloud OCR option for faded thermal receipts, and recognise the tax-rate markers on Japanese receipts (※ and 軽 for the 8% rate) to split tax exactly.

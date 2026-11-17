@@ -120,6 +120,15 @@ export function initMap() {
   map.on('dragstart', (e) => { if (e.originalEvent) stopFollow(); });
   on('focus-place', stopFollow);
   on('fit-friends', fitFriends);
+  on('reaction-pop', ({ userId, emoji }) => { // an emoji floats up from whoever sent it
+    const loc = state.locations[userId];
+    if (!loc || $('#screen-map').hidden) return;
+    const el = document.createElement('div');
+    el.className = 'reaction-pop-mk'; // MapLibre moves this one; the inner one animates
+    el.innerHTML = `<span class="reaction-pop">${esc(emoji)}</span>`;
+    const m = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -50] }).setLngLat([loc.lng, loc.lat]).addTo(map);
+    setTimeout(() => m.remove(), 2400);
+  });
   on('locations', () => {
     if (follow?.kind === 'friend') { if (!state.locations[follow.id]) stopFollow(); else keepFollowing(); }
     if (!accCircle) return;
@@ -138,7 +147,7 @@ export function initMap() {
     if (locs.length === 1) return map.flyTo({ center: [locs[0].lng, locs[0].lat], zoom: 15, padding: padding() });
     const b = new maplibregl.LngLatBounds();
     locs.forEach((l) => b.extend([l.lng, l.lat]));
-    map.fitBounds(b, { padding: padding(), maxZoom: 16 });
+    fitTo(b, { maxZoom: 16 });
   });
   on('labels', () => { usingFallback = false; map.setStyle(styleUrl, { diff: false }); });
 
@@ -157,10 +166,28 @@ export function initMap() {
 
 export function resizeMap() { map?.resize(); }
 
+// Room to leave around anything we fit or fly to: the top bar, the day strip and nav, and any open
+// card or panel. On a phone those are at the bottom; on a computer they're side panels, so fitting
+// "everyone" with a friend's card open used to put people underneath it.
 function padding() {
+  const c = map?.getContainer().getBoundingClientRect() || { left: 0, top: 0, right: innerWidth, bottom: innerHeight, width: innerWidth, height: innerHeight };
   const stripH = $('#line-strip')?.offsetHeight || 0;
-  const bottom = (document.querySelector('.app.nav-collapsed') ? 60 : 70) + stripH + 20;
-  return { top: 120, bottom: Math.min(bottom, innerHeight / 2), left: 30, right: 70 };
+  const pad = { top: 120, bottom: (document.querySelector('.app.nav-collapsed') ? 60 : 70) + stripH + 20, left: 30, right: 70 };
+  for (const s of document.querySelectorAll('#sheet-root .sheet:not(.closing)')) {
+    // Layout box, not the on-screen one: a card that is still sliding in counts where it will settle
+    const r = { left: s.offsetLeft, top: s.offsetTop, width: s.offsetWidth, height: s.offsetHeight };
+    r.right = r.left + r.width; r.bottom = r.top + r.height;
+    if (!r.width || r.bottom <= c.top || r.top >= c.bottom) continue;
+    const fullWidth = r.width > c.width * 0.7;
+    if (fullWidth) pad.bottom = Math.max(pad.bottom, c.bottom - r.top + 16);
+    else if (r.left - c.left < c.right - r.right) pad.left = Math.max(pad.left, r.right - c.left + 20); // panel on the left
+    else pad.right = Math.max(pad.right, c.right - r.left + 20);                                        // panel on the right
+  }
+  // Never squeeze the visible area to nothing (MapLibre then silently refuses to move)
+  pad.bottom = Math.min(pad.bottom, c.height * 0.62);
+  if (pad.left + pad.right > c.width * 0.75) { const k = (c.width * 0.75) / (pad.left + pad.right); pad.left *= k; pad.right *= k; }
+  if (pad.top + pad.bottom > c.height * 0.8) pad.top = Math.max(60, c.height * 0.8 - pad.bottom);
+  return pad;
 }
 
 // fitBounds adds its padding to whatever padding the map kept from the last camera move (pinpointing a
@@ -468,8 +495,6 @@ function focusFriend(id) {
   const zoom = loc.acc > 500 ? 14 : loc.acc > 100 ? 15.5 : 17;
   // Keep them in view above an open card (the friend sheet)
   const pad = padding();
-  const sheet = document.querySelector('.sheet.peek:not(.closing)');
-  if (sheet && innerWidth < 900) pad.bottom = Math.max(pad.bottom, sheet.offsetHeight + 24);
   map.flyTo({ center: [loc.lng, loc.lat], zoom, padding: pad, duration: 900 });
   const fm = friendMarkers.get(+id);
   if (fm) {
@@ -502,12 +527,7 @@ function followTarget() {
   if (follow?.kind === 'friend') return state.locations[follow.id] || null;
   return null;
 }
-function sheetPadding() {
-  const pad = padding();
-  const sheet = document.querySelector('.sheet.peek:not(.closing)');
-  if (sheet && innerWidth < 900) pad.bottom = Math.max(pad.bottom, sheet.offsetHeight + 24);
-  return pad;
-}
+const sheetPadding = () => padding(); // padding() already leaves room for open cards
 export function startFollow(f, { fly = true } = {}) {
   follow = f;
   setFollowGps(f.kind === 'me');
