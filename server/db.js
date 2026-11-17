@@ -239,6 +239,36 @@ export function openDb(dataDir) {
       updated_at INTEGER,
       deleted_at INTEGER
     );
+    -- Group chat: "trip" for everyone, "g:<subgroup id>" for a subgroup's members.
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat TEXT NOT NULL,
+      user_id INTEGER,
+      kind TEXT NOT NULL DEFAULT 'text',
+      text TEXT,
+      reply_to INTEGER,
+      mentions TEXT,
+      file TEXT, thumb TEXT, width INTEGER, height INTEGER, bytes INTEGER NOT NULL DEFAULT 0, mime TEXT,
+      gif_url TEXT, gif_mp4 TEXT,
+      client_id TEXT,
+      created_at INTEGER NOT NULL,
+      deleted_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS chat_messages_chat ON chat_messages(chat, id);
+    CREATE INDEX IF NOT EXISTS chat_messages_client ON chat_messages(user_id, client_id);
+    CREATE TABLE IF NOT EXISTS chat_reactions (
+      message_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at INTEGER,
+      PRIMARY KEY (message_id, user_id, emoji)
+    );
+    CREATE TABLE IF NOT EXISTS chat_reads (
+      user_id INTEGER NOT NULL,
+      chat TEXT NOT NULL,
+      last_id INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, chat)
+    );
     CREATE TABLE IF NOT EXISTS photo_likes (
       photo_id INTEGER NOT NULL,
       user_id INTEGER NOT NULL,

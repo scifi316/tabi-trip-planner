@@ -13,6 +13,8 @@ import { cleanExpense, CURRENCIES } from './money.js';
 import { createNotifier, prefsOf, cleanPrefs, NOTIFY_KINDS } from './notify.js';
 import { imageSize } from './images.js';
 import { createPusher } from './push.js';
+import { createChat, isKlipyMedia } from './chat.js';
+import { APK_MAX, appInfo, assetLinks } from './apk.js';
 
 export function createApp({ db, blobs, root, dataDir = '', env = process.env, getHealth = () => ({}) }) {
   const TRUST_PROXY = /^(1|true|yes)$/i.test(env.TRUST_PROXY || '');
@@ -74,6 +76,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
 
   const DEFAULT_TRIP = { name: 'Japan trip', start: null, end: null, timezone: 'Asia/Tokyo', autoConfirm: 0, vetoRule: 'single', joinCode: null, currency: 'JPY', photoReminder: '19:00' };
   const getTrip = () => ({ ...DEFAULT_TRIP, ...getSetting('trip', {}) });
+  // The Android app an admin uploaded (see apk.js); what everyone sees of it
+  const androidApp = () => getSetting('androidApp', null);
+  const androidPublic = (a = androidApp()) => (a ? { version: a.versionName, code: a.versionCode, size: a.size, at: a.at, test: !!a.test } : null);
 
   const cache = {
     get(key, maxAge = 14 * 864e5) {
@@ -160,6 +165,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const listStays = () => db.prepare('SELECT * FROM stays WHERE deleted_at IS NULL ORDER BY COALESCE(start_day, \'0\'), created_at').all()
     .map((s) => ({ id: s.id, name: s.name, address: s.address || '', lat: s.lat, lng: s.lng, startDay: s.start_day, endDay: s.end_day, notes: s.notes || '', by: s.created_by }));
   const broadcastStays = () => broadcast({ t: 'stays', stays: listStays() });
+  const gifCache = new Map(), gifCount = new Map(); // GIF search: short-lived results, per-person limit
   const activeUsers = () => db.prepare('SELECT id, name FROM users WHERE removed_at IS NULL').all();
   const photoBytes = () => db.prepare('SELECT COALESCE(SUM(bytes), 0) n FROM daily_photos WHERE deleted_at IS NULL').get().n;
   const broadcastPhotos = () => broadcast({ t: 'photos', list: photoList(), bytes: photoBytes(), limit: PHOTO_LIMIT });
@@ -287,6 +293,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
       subgroups: listSubgroups(),
       stays: listStays(),
+      chats: chat.listFor(me.id),
       expenses: db.prepare('SELECT * FROM expenses WHERE deleted_at IS NULL').all().map(expenseRow).filter((e) => canSeeExpense(me, e)),
       locations: listLocations(),
       online: onlineIds(),
@@ -296,7 +303,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       customEmojis: customEmojis(),
       photos: { list: photoList(), bytes: photoBytes(), limit: PHOTO_LIMIT },
       unread: notifier.unread(me.id),
-      config: { ...CONFIG, version: VERSION, build: BUILD, server: env.HA_NODE || os.hostname(), reactions: REACTIONS, notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
+      config: { ...CONFIG, version: VERSION, build: BUILD, server: env.HA_NODE || os.hostname(), reactions: REACTIONS, gifSearch: !!env.KLIPY_API_KEY, androidApp: androidPublic(), notifyKinds: Object.keys(NOTIFY_KINDS), gate: auth.gateEnabled ? auth.gateToken : null },
       serverTime: now(),
     };
   }
@@ -467,7 +474,9 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   function dropBlobIfUnused(key) {
     if (db.prepare('SELECT 1 FROM users WHERE avatar = ?').get(key) || db.prepare('SELECT 1 FROM attachments WHERE blob_key = ?').get(key)
       || db.prepare('SELECT 1 FROM custom_emojis WHERE file = ? AND deleted_at IS NULL').get(key)
-      || db.prepare('SELECT 1 FROM daily_photos WHERE (file = ? OR thumb = ?) AND deleted_at IS NULL').get(key, key)) return;
+      || db.prepare('SELECT 1 FROM daily_photos WHERE (file = ? OR thumb = ?) AND deleted_at IS NULL').get(key, key)
+      || db.prepare('SELECT 1 FROM chat_messages WHERE (file = ? OR thumb = ?) AND deleted_at IS NULL').get(key, key)
+      || androidApp()?.key === key) return;
     blobs.del?.(key).catch(() => {});
   }
 
@@ -483,6 +492,14 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const url = new URL(req.url, 'http://localhost');
     const p = url.pathname;
     try {
+      // Android checks this to trust the Tabi app with the site's links. It has to be public (Google
+      // fetches it without cookies), and only exists once an admin has uploaded the app.
+      if (p === '/.well-known/assetlinks.json' && req.method === 'GET') {
+        const a = androidApp() || (env.ANDROID_PACKAGE && env.ANDROID_CERT_SHA256 ? { package: env.ANDROID_PACKAGE, cert: env.ANDROID_CERT_SHA256.toUpperCase() } : null);
+        if (!a) return send(res, 404, 'Not found');
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300', ...res._extraHeaders });
+        return res.end(JSON.stringify(assetLinks(a)));
+      }
       if (p === '/healthz') { const { servers, ...h } = getHealth(); return send(res, 200, { ok: true, ...h }); } // one "role" only: scripts read it
 
       // Developer console entry: /dev?devkey=<DEV_KEY> once per device, then /dev
@@ -671,6 +688,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           type: b._type, batt: b.batt, acc: b.acc, trigger: b.t, fix: b.tst ? b.tst * 1000 : null, conn: b.conn,
           device: String(req.headers['x-limit-d'] || b.tid || '').slice(0, 40), ua: String(req.headers['user-agent'] || '').slice(0, 80),
         });
+        // For the Tabi Android app: is there a newer version, and is sharing switched off in Tabi?
+        const app = androidApp();
+        if (app) res.setHeader('X-Tabi-App-Latest', String(app.versionCode));
+        res.setHeader('X-Tabi-Sharing', u.share_location ? 'on' : 'off');
         const locs = listLocations();
         const out = [];
         for (const f of listUsers()) {
@@ -945,6 +966,112 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return res.end(buf);
       }
 
+      // ---- group chat: photos and GIFs ----
+      // Same envelope as picture a day: [4-byte length][thumbnail][photo]. The "photo" can also be an
+      // animated GIF from the phone (kept as it is, 5 MB at most); the thumbnail is its first frame.
+      if (p === '/api/chat/photo' && req.method === 'POST') {
+        let meta = {};
+        try { meta = JSON.parse(decodeURIComponent(String(req.headers['x-chat-meta'] || '{}'))); } catch { /* checked below */ }
+        if (!chat.canSee(user.id, String(meta.chat || ''))) return send(res, 403, { error: 'You’re not in that chat.' });
+        let buf;
+        try { buf = await readRaw(req, 6 * 1024 * 1024); } catch { return send(res, 413, { error: 'That’s too big (5 MB at most).' }); }
+        const tl = buf.length > 4 ? buf.readUInt32BE(0) : 0;
+        const thumbBuf = buf.subarray(4, 4 + tl), fullBuf = buf.subarray(4 + tl);
+        const ts = imageSize(thumbBuf), fsz = imageSize(fullBuf);
+        if (!tl || !ts || !fsz || ts.type === 'gif') return send(res, 400, { error: 'That picture could not be read.' });
+        if (fsz.type === 'gif' ? fullBuf.length > 5 * 1024 * 1024 : Math.max(fsz.width, fsz.height) > 2560) return send(res, 400, { error: 'The picture wasn’t shrunk properly. Reload Tabi and try again.' });
+        if (Math.max(ts.width, ts.height) > 640 || thumbBuf.length > 300 * 1024) return send(res, 400, { error: 'The preview is too big.' });
+        const limit = (+env.CHAT_MEDIA_LIMIT_MB || 3072) * 1048576;
+        if (chat.mediaBytes() + buf.length > limit) return send(res, 507, { error: 'The chat’s space for pictures is full. An admin can delete old pictures, or raise CHAT_MEDIA_LIMIT_MB on the server.' });
+        const file = await blobs.put(fullBuf, fsz.type), thumb = await blobs.put(thumbBuf, ts.type);
+        try {
+          const m = chat.post(user, { chat: meta.chat, clientId: meta.clientId, kind: 'photo', text: meta.text, replyTo: meta.replyTo, file, thumb,
+            width: fsz.width, height: fsz.height, bytes: fullBuf.length + thumbBuf.length, mime: { gif: 'image/gif', webp: 'image/webp', jpg: 'image/jpeg', png: 'image/png' }[fsz.type] });
+          return send(res, 200, { ok: true, m });
+        } catch (e) { dropBlobIfUnused(file); dropBlobIfUnused(thumb); return send(res, 400, { error: e.expose ? e.message : 'Couldn’t send it.' }); }
+      }
+      // The Android app: admins upload each build (from GitHub's android-build release); everyone signed in can download it
+      if (p === '/api/app/apk' && req.method === 'POST') {
+        if (!user.is_admin) return send(res, 403, { error: 'Only trip admins can upload the app.' });
+        let buf;
+        try { buf = await readRaw(req, APK_MAX); } catch { return send(res, 413, { error: `That file is over ${APK_MAX / 1048576} MB. Is it the right one?` }); }
+        const info = appInfo(buf);
+        if (info.error) return send(res, 400, { error: info.error });
+        const prev = androidApp();
+        const warnings = [];
+        const here = String(req.headers.host || '').split(':')[0];
+        if (info.host && here && !/^(localhost|127\.|\[)/.test(here) && info.host.toLowerCase() !== here.toLowerCase()) warnings.push(`It was built for ${info.host}, but this site is ${here}. Set the TABI_HOST variable on GitHub and build again.`);
+        if (info.test) warnings.push('This is a test build, signed with a throwaway key. Phones that install it will have to uninstall it before a properly signed version can be installed.');
+        if (prev && info.versionCode < prev.versionCode) warnings.push(`It’s older than the one it replaces (${prev.versionName}). Phones that already have the newer one won’t take it.`);
+        if (prev && info.versionCode === prev.versionCode && prev.cert === info.cert && prev.commit !== info.commit) warnings.push('It has the same version number as the last one, so phones won’t see it as an update. Raise versionCode in android/version.properties.');
+        if (prev && prev.cert !== info.cert) warnings.push('It’s signed with a different key than the last one. Phones must uninstall the old app before installing this one.');
+        const key = await blobs.put(buf, 'apk');
+        const app = { ...info, key, size: buf.length, at: now(), by: user.id };
+        setSetting('androidApp', app);
+        if (prev?.key && prev.key !== key) dropBlobIfUnused(prev.key);
+        devPush('op', { user: user.name, op: 'android.upload', ok: true, version: info.versionName, code: info.versionCode, test: info.test });
+        broadcast({ t: 'app', app: androidPublic(app) });
+        return send(res, 200, { ok: true, app: androidPublic(app), warnings });
+      }
+      if (p === '/api/app/apk' && req.method === 'DELETE') {
+        if (!user.is_admin) return send(res, 403, { error: 'Only trip admins can remove the app.' });
+        const prev = androidApp();
+        db.prepare("DELETE FROM settings WHERE key = 'androidApp'").run();
+        if (prev?.key) dropBlobIfUnused(prev.key);
+        broadcast({ t: 'app', app: null });
+        return send(res, 200, { ok: true });
+      }
+      if (p === '/api/app/tabi.apk' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const app = androidApp();
+        const buf = app && await blobs.get(app.key);
+        if (!buf) return send(res, 404, { error: 'The Android app hasn’t been uploaded yet.' });
+        res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': buf.length,
+          'Content-Disposition': `attachment; filename="Tabi-${app.versionName}${app.test ? '-test' : ''}.apk"`, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(req.method === 'HEAD' ? undefined : buf);
+      }
+      const cf = p.match(/^\/api\/chat\/f\/([a-f0-9]{64}\.(?:jpg|png|webp|gif))$/);
+      if (cf && req.method === 'GET') {
+        if (!chat.canSeeFile(user.id, cf[1])) return send(res, 404, { error: 'Not found' });
+        const buf = await blobs.get(cf[1]);
+        if (!buf) return send(res, 404, { error: 'Not found' });
+        res.writeHead(200, { 'Content-Type': { png: 'image/png', webp: 'image/webp', jpg: 'image/jpeg', gif: 'image/gif' }[cf[1].split('.').pop()], 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+        return res.end(buf);
+      }
+      // GIF search through KLIPY (Tenor's API closed in June 2026). The key stays on the server and no
+      // one's identity is sent; the GIFs themselves load straight from KLIPY, as its terms require.
+      if (p === '/api/gifs' && req.method === 'GET') {
+        if (!env.KLIPY_API_KEY) return send(res, 200, { available: false, results: [] });
+        const q = String(url.searchParams.get('q') || '').trim().slice(0, 80);
+        const page = Math.max(1, Math.min(20, +url.searchParams.get('page') || 1));
+        const n = (gifCount.get(user.id) || []).filter((t) => now() - t < 60e3);
+        if (n.length >= 30) return send(res, 429, { error: 'Searching too fast. Try again in a moment.' });
+        gifCount.set(user.id, [...n, now()]);
+        const key = `${q}|${page}`;
+        const hit = gifCache.get(key);
+        if (hit && now() - hit.at < 10 * 60e3) return send(res, 200, hit.out);
+        try {
+          const path2 = q ? `gifs/search?q=${encodeURIComponent(q)}&` : 'gifs/trending?';
+          const r = await fetch(`https://api.klipy.com/api/v1/${encodeURIComponent(env.KLIPY_API_KEY)}/${path2}page=${page}&per_page=24&content_filter=medium&locale=en`, { signal: AbortSignal.timeout(8000) });
+          if (!r.ok) throw new Error(`KLIPY ${r.status}`);
+          const j = await r.json();
+          const items = (j?.data?.data || []).map((g) => {
+            const f = g.file || {};
+            const pick = (sizes, fmt) => { for (const s of sizes) { const x = f[s]?.[fmt]; if (x?.url && isKlipyMedia(x.url)) return x; } return null; };
+            const send1 = pick(['md', 'hd', 'sm'], 'webp') || pick(['md', 'hd', 'sm'], 'gif');
+            const prev = pick(['sm', 'xs', 'md'], 'webp') || pick(['sm', 'xs', 'md'], 'gif');
+            const mp4 = pick(['md', 'hd', 'sm'], 'mp4');
+            return send1 && prev ? { id: String(g.id || g.slug || ''), title: String(g.title || '').slice(0, 120), url: send1.url, w: send1.width, h: send1.height, preview: prev.url, pw: prev.width, ph: prev.height, mp4: mp4?.url || null } : null;
+          }).filter(Boolean);
+          const out = { available: true, results: items, more: !!j?.data?.has_next, page };
+          gifCache.set(key, { at: now(), out });
+          if (gifCache.size > 300) gifCache.delete(gifCache.keys().next().value);
+          return send(res, 200, out);
+        } catch (e) {
+          console.log(new Date().toISOString(), 'gif search failed', { error: String(e.message || e).replace(env.KLIPY_API_KEY, '…') });
+          return send(res, 502, { available: true, error: 'GIF search isn’t answering right now. Try again, or send a GIF from your phone.' });
+        }
+      }
+
       // Picture a day. The browser sends both sizes in one body: [4-byte length][thumbnail][photo],
       // already resized (photo ≤ 2560 px, thumbnail ≤ 640 px) with location data stripped.
       if (p === '/api/photos' && req.method === 'POST') {
@@ -1072,6 +1199,13 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       .then((rs) => { if (rs.length) devPush('op', { user: nameOf(userId), op: 'push.send', ok: rs.some((r) => r.ok), devices: rs.length, error: rs.find((r) => !r.ok)?.error || undefined }); })
       .catch(() => {});
   };
+  const chat = createChat({
+    db, nameOf: (id) => nameOf(id), activeUsers: () => activeUsers(), membersOf: (gid) => membersOf(gid),
+    subgroupName: (gid) => db.prepare('SELECT name FROM subgroups WHERE id = ?').get(gid)?.name || null,
+    sendToUsers: (ids, msg) => { const set = new Set(ids); const data = JSON.stringify(msg); for (const c of clients) if (set.has(c.user.id)) sendTo(c, data); },
+    viewersOf: (ch) => new Set([...clients].filter((c) => c.visible !== false && c.chatOpen === ch).map((c) => c.user.id)),
+    notifier: { notify: (...a) => notifier.notify(...a) }, isReaction: (e) => isReaction(e),
+  });
   const notifier = createNotifier({ db, deliver: (userId, item, unread) => {
     let onScreen = false;
     for (const c of clients) if (c.user.id === userId) { sendTo(c, { t: 'notif', item, unread }); if (c.visible !== false) onScreen = true; }
@@ -1100,7 +1234,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const e = getExpense(id);
     for (const c of clients) sendTo(c, e && canSeeExpense(c.user, e) ? { t: 'expense', expense: e } : { t: 'expense.del', id });
   }
-  const broadcastGroups = () => broadcast({ t: 'subgroups', subgroups: listSubgroups() });
+  // Subgroups changing changes who's in which chat
+  const broadcastGroups = () => { broadcast({ t: 'subgroups', subgroups: listSubgroups() }); chat.sendChatList(onlineIds()); };
   function refreshClientsOf(userId) {
     const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     for (const c of clients) if (c.user.id === userId && u) { c.user = u; sendTo(c, snapshot(u)); }
@@ -1127,6 +1262,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         try { msg = JSON.parse(raw); } catch { return; }
         if (msg.t === 'ping') return ws.send('{"t":"pong"}');
         if (msg.t === 'vis') { client.visible = !!msg.v; return; } // is the app on screen? (decides push vs. in-app only)
+        if (msg.t === 'chatview') { client.chatOpen = typeof msg.chat === 'string' ? msg.chat.slice(0, 80) : null; return; } // which chat is open (no notifications for it)
         if (msg.t !== 'op') return;
         const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(client.user.id);
         if (!fresh) { ws.send('{"t":"kicked"}'); return ws.close(); }
@@ -1782,6 +1918,22 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         for (const c of clients) sendTo(c, { t: 'trip', trip: tripForClient(c.user) });
         return { ok: true };
       }
+      // ---- group chat ----
+      case 'chat.send': {
+        const kind = d.gif ? 'gif' : 'text';
+        const m = chat.post(user, { chat: d.chat, clientId: d.clientId, kind, text: kind === 'gif' ? String(d.gif.title || '').slice(0, 120) : d.text, replyTo: d.replyTo,
+          gifUrl: d.gif?.url, gifMp4: d.gif?.mp4, width: Math.min(+d.gif?.w || 0, 4000) || null, height: Math.min(+d.gif?.h || 0, 4000) || null });
+        return { ok: true, m };
+      }
+      case 'chat.history': return { ok: true, ...chat.history(user.id, String(d.chat || ''), d) };
+      case 'chat.delete': {
+        const r = chat.remove(user, d.id);
+        if (r.file) dropBlobIfUnused(r.file);
+        if (r.thumb) dropBlobIfUnused(r.thumb);
+        return { ok: true };
+      }
+      case 'chat.react': chat.react(user, d.id, String(d.emoji || ''), !!d.on); return { ok: true };
+      case 'chat.read': chat.markRead(user.id, String(d.chat || ''), d.id); return { ok: true };
       case 'stay.save': {
         const s = d.stay || {};
         if (!/^[\w-]{6,64}$/.test(String(s.id || ''))) fail('Bad stay id');
@@ -1900,6 +2052,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           notifications: count('SELECT COUNT(*) n FROM notifications'), unreadNotifications: count('SELECT COUNT(*) n FROM notifications WHERE read_at IS NULL'),
           profilePhotos: count('SELECT COUNT(*) n FROM users WHERE avatar IS NOT NULL'),
           push: pusher.stats(),
+          chat: { ...chat.stats(), mediaBytes: chat.mediaBytes() },
         },
         clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua, build: c.build || null, current: !c.build || c.build === BUILD })),
         build: BUILD,

@@ -1,13 +1,13 @@
 // Service worker: app shell works offline; map assets are cache-first so saved areas
 // keep working without a connection.
-const VERSION = 'tabi-shell-v6';
+const VERSION = 'tabi-shell-v7';
 const MAP_CACHE = 'tabi-map-v1';
 const SHELL = [
   '/', '/index.html', '/app.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
-  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js',
+  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js', '/js/chat.js', '/js/android.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
   '/vendor/maplibre-gl/maplibre-gl-worker.mjs',
   '/vendor/fflate/browser.js',
@@ -40,7 +40,7 @@ self.addEventListener('fetch', (e) => {
 
   if (url.origin === self.location.origin) {
     // Receipt images and profile photos never change (new ones get new URLs): keep them for offline viewing.
-    if (/^\/api\/(attachments\/[\w-]+|avatars\/[a-f0-9]{64}\.\w+|photos\/f\/[a-f0-9]{64}\.\w+|emoji\/[a-f0-9]{64}\.\w+)$/.test(url.pathname)) {
+    if (/^\/api\/(attachments\/[\w-]+|avatars\/[a-f0-9]{64}\.\w+|photos\/f\/[a-f0-9]{64}\.\w+|chat\/f\/[a-f0-9]{64}\.\w+|emoji\/[a-f0-9]{64}\.\w+)$/.test(url.pathname)) {
       e.respondWith(caches.open('tabi-receipts').then(async (c) => (await c.match(req)) || fetch(req).then((r) => { if (r.ok) c.put(req, r.clone()); return r; })));
       return;
     }
@@ -59,7 +59,9 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Cross-origin requests from the app are map styles, tiles, sprites and fonts: cache first.
+  // GIFs from KLIPY load straight from KLIPY every time: its terms don't allow keeping copies.
+  if (/(^|\.)klipy\.com$/.test(url.hostname)) return;
+  // Other cross-origin requests from the app are map styles, tiles, sprites and fonts: cache first.
   if (url.protocol === 'https:') {
     e.respondWith((async () => {
       const cache = await caches.open(MAP_CACHE);

@@ -9,6 +9,12 @@ import { openTarget } from './notifications.js';
 import { openPhotoEditor } from './photo.js';
 import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
+import { rememberApp } from './android.js';
+
+rememberApp(); // opened from the Android app: remember it, tidy the address
+addEventListener('hashchange', () => {
+  if (location.hash === '#android-app' && state.signedIn) go('settings').then(() => import('./android.js').then((a) => a.openAndroidSheet()));
+});
 
 export const LOGO = `<svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#2B3A67"/>
   <path d="M14 44h36" stroke="#9CAEB7" stroke-width="5" stroke-linecap="round"/><path d="M14 44h18" stroke="#00A672" stroke-width="5" stroke-linecap="round"/>
@@ -107,18 +113,21 @@ async function go(tab) {
     setTimeout(() => $('[data-me-btn]')?.click(), 50);
   }
   current = tab;
-  for (const s of ['map', 'itinerary', 'money', 'settings', 'notifications']) $(`#screen-${s}`).hidden = s !== tab;
+  for (const s of ['map', 'itinerary', 'chat', 'money', 'settings', 'notifications']) $(`#screen-${s}`).hidden = s !== tab;
   $$('.tab[data-tab]').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', money: 'yen', settings: 'settings', notifications: 'bell' }[tab]}`);
+  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', chat: 'chat', money: 'yen', settings: 'settings', notifications: 'bell' }[tab]}`);
   if (tab === 'map') (await loaded.map).resizeMap();
   if (tab === 'itinerary') (await loaded.itin).showItinerary();
   if (tab === 'money') (await loaded.money).showMoney();
   if (tab === 'settings') (await loaded.settings).showSettings();
   if (tab === 'notifications') (await loaded.notifs).showNotifications();
+  emit('tab', tab);
+  if (tab === 'chat') (await loaded.chat).showChat();
   maybeStartTour(tab);
   refreshMeButtons();
-  history.replaceState(null, '', tab === 'map' ? '/' : `/#${tab}`);
+  if (!(tab === 'chat' && location.hash.startsWith('#chat'))) history.replaceState(null, '', tab === 'map' ? '/' : `/#${tab}`);
 }
+export const currentTab = () => current;
 on('go', go);
 
 function setNavCollapsed(c) {
@@ -126,6 +135,16 @@ function setNavCollapsed(c) {
   $('#nav-handle').hidden = !c;
   localStorage.setItem('tabi.nav', c ? 'collapsed' : 'open');
   setTimeout(() => loaded.map?.then((m) => m.resizeMap()), 320);
+}
+
+// The red count on the Chat tab: unread messages across your chats.
+function refreshChatBadge() {
+  const n = (state.chats || []).reduce((a, c) => a + (c.unread || 0), 0);
+  const b = $('[data-chat-count]');
+  if (!b) return;
+  b.hidden = !n;
+  b.textContent = n > 99 ? '99+' : String(n);
+  b.closest('.tab').setAttribute('aria-label', n ? `Chat, ${n} unread` : 'Chat');
 }
 
 // ---------- auth screens ----------
@@ -198,6 +217,7 @@ async function startApp() {
   loaded.settings = import('./settings.js');
   loaded.money = import('./money.js');
   loaded.notifs = import('./notifpage.js');
+  loaded.chat = import('./chat.js');
   await import('./location.js');
   const m = await loaded.map;
   m.initMap();
@@ -212,12 +232,16 @@ async function startApp() {
   on('users', refreshMeButtons);
   on('state', refreshMeButtons);
   on('notifs', refreshMeButtons);
+  on('chats', refreshChatBadge);
+  refreshChatBadge();
   on('state', maybePromptRecovery);
   on('error', (msg) => toast(msg));
   refreshMeButtons();
 
   const hash = location.hash.slice(1);
-  go(['itinerary', 'money', 'settings', 'notifications'].includes(hash) ? hash : 'map');
+  if (hash === 'android-app') { // "an update is ready" from the Android app
+    go('settings').then(() => import('./android.js').then((a) => a.openAndroidSheet()));
+  } else go(['itinerary', 'chat', 'money', 'settings', 'notifications'].includes(hash) ? hash : 'map');
   connect();
 }
 

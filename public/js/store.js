@@ -32,6 +32,9 @@ export const state = {
   customEmojis: [], // { name, url, by, at }
   photos: { list: [], bytes: 0, limit: 0 }, // picture a day
   stays: [], // where the group sleeps
+  chats: [], // [{ id, name, members, readId, unread, last }]
+  chatMsgs: {}, // chat id -> { list: [messages, oldest first], more }
+  chatViewing: null, // the chat open on screen (set by chat.js)
   config: {},
   conn: 'offline', // online | offline | connecting
   outbox: JSON.parse(localStorage.getItem(LS.outbox) || '[]'),
@@ -44,6 +47,7 @@ function persist() {
       me: state.me, trip: state.trip, users: [...state.users, ...(state.formerUsers || [])], places: [...state.places.values()], subgroups: state.subgroups,
       expenses: [...state.expenses.values()], locations: state.locations, activity: state.activity.slice(0, 30), config: state.config,
       notifications: state.notifications.slice(0, 60), unread: state.unread, reactions: state.reactions.slice(0, 60), customEmojis: state.customEmojis, photos: state.photos, stays: state.stays,
+      chats: state.chats, chatMsgs: Object.fromEntries(Object.entries(state.chatMsgs).map(([k, b]) => [k, { list: b.list.filter((x) => x.id).slice(-40), more: true }])),
     }));
   } catch { /* quota: ignore */ }
 }
@@ -56,7 +60,8 @@ export function loadCached() {
     if (!c || !c.me) return false;
     setUsers(c.users);
     Object.assign(state, { me: c.me, trip: c.trip, subgroups: c.subgroups || [], locations: c.locations || {}, activity: c.activity || [], config: c.config || {},
-      notifications: c.notifications || [], unread: c.unread || 0, reactions: c.reactions || [], customEmojis: c.customEmojis || [], photos: c.photos || { list: [], bytes: 0, limit: 0 }, stays: c.stays || [] });
+      notifications: c.notifications || [], unread: c.unread || 0, reactions: c.reactions || [], customEmojis: c.customEmojis || [], photos: c.photos || { list: [], bytes: 0, limit: 0 }, stays: c.stays || [],
+      chats: c.chats || [], chatMsgs: c.chatMsgs || {} });
     state.places = new Map((c.places || []).map((p) => [p.id, p]));
     state.expenses = new Map((c.expenses || []).map((e) => [e.id, e]));
     for (const o of state.outbox) applyLocal(o.op, o.data);
@@ -147,6 +152,7 @@ function handle(m) {
       state.customEmojis = m.customEmojis || [];
       state.photos = m.photos || { list: [], bytes: 0, limit: 0 };
       state.stays = m.stays || [];
+      state.chats = m.chats || [];
       state.expenseReset = m.expenseReset || null;
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
@@ -154,11 +160,15 @@ function handle(m) {
       setConn('online');
       flushOutbox();
       persistSoon();
-      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses', 'notifs', 'photos', 'stays'].forEach((e) => emit(e));
+      ['state', 'places', 'users', 'locations', 'subgroups', 'expenses', 'notifs', 'photos', 'stays', 'chats', 'chat'].forEach((e) => emit(e));
       break;
     case 'ack': {
       const idx = state.outbox.findIndex((o) => o.id === m.id);
-      if (idx >= 0) { state.outbox.splice(idx, 1); saveOutbox(); emit('outbox'); }
+      if (idx >= 0) {
+        const [o] = state.outbox.splice(idx, 1); saveOutbox(); emit('outbox');
+        if (o.op === 'chat.send' && !m.ok) chatFailed(o.data);
+      }
+      if (m.m?.chat && m.ok) chatIncoming(m.m);
       const cb = pendingAcks.get(m.id);
       if (cb) { pendingAcks.delete(m.id); cb(m); }
       if (!m.ok && m.error) emit('error', m.error);
@@ -197,6 +207,10 @@ function handle(m) {
       state.reactions.length = Math.min(state.reactions.length, 60);
       emit('reaction', { r: m.r, all: !!m.all }); persistSoon(); break;
     }
+    case 'app': state.config.androidApp = m.app || null; emit('app'); persistSoon(); break;
+    case 'chats': state.chats = m.chats || []; emit('chats'); persistSoon(); break;
+    case 'chat': chatIncoming(m.m); break;
+    case 'chat.update': chatUpdated(m.m); break;
     case 'stays': state.stays = m.stays || []; emit('stays'); persistSoon(); break;
     case 'photos': state.photos = { list: m.list || [], bytes: m.bytes || 0, limit: m.limit || 0 }; emit('photos'); persistSoon(); break;
     case 'emojis': state.customEmojis = m.list || []; emit('emojis'); persistSoon(); break;
@@ -221,7 +235,7 @@ function flushOutbox() {
 
 // Ops that change shared data go through the outbox so they survive being offline.
 const QUEUED = new Set(['place.add', 'place.bulk', 'place.update', 'place.delete', 'place.vote', 'place.reorder',
-  'expense.save', 'expense.delete', 'group.save', 'group.member', 'group.delete']);
+  'expense.save', 'expense.delete', 'group.save', 'group.member', 'group.delete', 'chat.send']);
 
 export function op(name, data = {}) {
   const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -245,6 +259,62 @@ export function op(name, data = {}) {
 // Fire-and-forget (location pings) — not queued, no optimistic state.
 export function send(name, data) {
   if (ws?.readyState === 1) ws.send(JSON.stringify({ t: 'op', op: name, data }));
+}
+// A plain message to the server (not an op), e.g. which chat is on screen.
+export function wsSend(obj) {
+  if (ws?.readyState === 1) ws.send(JSON.stringify(obj));
+}
+
+// ---------- chat messages ----------
+// Kept per chat, oldest first. A message you send shows straight away as "pending" (also offline:
+// it waits in the outbox) and is swapped for the real one when the server has it.
+export const chatBox = (chat) => (state.chatMsgs[chat] ||= { list: [], more: true });
+const chatOrder = (a, b) => (a.id && b.id ? a.id - b.id : a.id ? -1 : b.id ? 1 : a.at - b.at);
+function chatIncoming(msg) {
+  if (!msg?.chat) return;
+  const box = chatBox(msg.chat);
+  const mine = msg.by === state.me?.id;
+  const known = box.list.findIndex((x) => x.id === msg.id);
+  const pend = mine && msg.clientId ? box.list.findIndex((x) => !x.id && x.clientId === msg.clientId) : -1;
+  if (known >= 0) box.list[known] = msg;
+  else if (pend >= 0) box.list[pend] = msg;
+  else box.list.push(msg);
+  if (pend >= 0 && known >= 0) box.list.splice(pend, 1);
+  box.list.sort(chatOrder);
+  const c = state.chats.find((x) => x.id === msg.chat);
+  if (c && known < 0) {
+    if (!c.last || msg.id >= c.last.id) c.last = msg;
+    const looking = state.chatViewing === msg.chat && !document.hidden;
+    if (mine) { c.unread = 0; c.readId = Math.max(c.readId || 0, msg.id); } else if (!looking && msg.id > (c.readId || 0) && msg.kind !== 'deleted') c.unread = (c.unread || 0) + 1;
+  }
+  emit('chat', { m: msg, fresh: known < 0 && pend < 0 }); emit('chats'); persistSoon();
+}
+function chatUpdated(msg) {
+  const box = state.chatMsgs[msg.chat];
+  const i = box ? box.list.findIndex((x) => x.id === msg.id) : -1;
+  if (i >= 0) box.list[i] = msg;
+  const c = state.chats.find((x) => x.id === msg.chat);
+  if (c?.last?.id === msg.id) c.last = msg;
+  emit('chat', { m: msg }); emit('chats'); persistSoon();
+}
+function chatFailed(d) {
+  const p = state.chatMsgs[d.chat]?.list.find((x) => !x.id && x.clientId === d.clientId);
+  if (p) { p.failed = true; emit('chat', {}); }
+}
+// Messages fetched from the server (history): merged into what we have.
+export function chatMerge(chat, messages, { more, older } = {}) {
+  const box = chatBox(chat);
+  const have = new Map(box.list.filter((x) => x.id).map((x) => [x.id, x]));
+  // A gap between what we had cached and the newest page: drop the cache, it would show out of order
+  if (!older && more && messages.length && box.list.some((x) => x.id) && Math.max(...have.keys()) < messages[0].id) {
+    box.list = box.list.filter((x) => !x.id);
+    have.clear();
+  }
+  for (const m of messages) have.set(m.id, m);
+  box.list = [...have.values(), ...box.list.filter((x) => !x.id)].sort(chatOrder);
+  if (older || !box.loaded) box.more = !!more;
+  box.loaded = true;
+  persistSoon();
 }
 
 function applyLocal(name, d) {
@@ -312,6 +382,15 @@ function applyLocal(name, d) {
       for (const p of state.places.values()) if (p.groupId === d.id) p.groupId = null;
       evt = 'subgroups';
       break;
+    case 'chat.send': {
+      const box = chatBox(d.chat);
+      if (box.list.some((x) => x.clientId === d.clientId)) return;
+      box.list.push({ id: 0, clientId: d.clientId, chat: d.chat, by: meId, kind: d.gif ? 'gif' : 'text', text: d.gif ? d.gif.title || '' : String(d.text || '').trim(),
+        replyTo: d.replyTo || null, at: now, mentions: [], reactions: {}, media: d.gif ? { url: d.gif.url, mp4: d.gif.mp4, w: d.gif.w, h: d.gif.h } : null, pending: true });
+      emit('chat', { local: true });
+      persistSoon();
+      return;
+    }
     default: return;
   }
   emit(evt);

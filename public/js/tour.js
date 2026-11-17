@@ -10,7 +10,7 @@ const TOURS = {
     { sel: '#friend-row', title: 'Friends and subgroups', text: 'Tap Friends to find someone on the map, see their plan for the day, or settle up with them. Tap “Split up” when the group heads off in different directions.' },
     { sel: '#line-strip', title: 'The day’s line', text: 'Each circle is a confirmed stop, in order, like stations on a train line. Filled circles are done and the pulsing one is next. Use the arrows to look at other days.' },
     { sel: '#fab-add', title: 'Add places', text: 'Import your Google My Maps, paste a bunch of links, or search.' },
-    { sel: '#tabbar', title: 'Get around', text: 'Switch between the map, the itinerary, money and settings. The arrow hides this bar when you want more map.' },
+    { sel: '#tabbar', title: 'Get around', text: 'Switch between the map, the itinerary, the group chat, money and settings. The arrow hides this bar when you want more map.' },
   ],
   itinerary: [
     { sel: '#screen-itinerary .days', title: 'Pick a day', text: 'Every day of the trip, with how many places are planned. “Unscheduled” holds ideas without a day yet.' },
@@ -34,6 +34,9 @@ const TOURS = {
     { sel: '#line-strip [data-day-photos]', title: 'New: picture a day', text: 'Anyone can add the day’s photo, up to 5 a day. The most liked one becomes the day’s cover, and the whole album downloads in one go.' },
     { sel: '#screen-map [data-me-btn]', title: 'New: notifications when Tabi is closed', text: 'Turn them on for this phone in your account or Settings, and they reach your lock screen. On iPhone, add Tabi to your Home Screen first.' },
   ],
+  'new-1.8': [
+    { sel: '#tabbar [data-tab=chat]', title: 'New: group chat', text: 'One chat for the whole trip, and one for each subgroup that only its members can see. Send photos and GIFs, reply to a message, and @mention someone to make sure they see it.' },
+  ],
   money: [
     { sel: '#screen-money .money-summary', title: 'Who owes whom', text: 'Your running total, plus exactly what you owe each person or what they owe you. Record a payment when someone pays you back.' },
     { sel: '#screen-money [data-add]', title: 'Add an expense', text: 'Snap the receipt and tap “Read receipt” to fill in the total and items. Split equally, by exact amounts, by shares, or item by item.' },
@@ -50,7 +53,7 @@ let active = null;
 export function tourDone(screen) { return localStorage.getItem(KEY + screen) === 'done'; }
 export function resetTours() { Object.keys(TOURS).forEach((s) => localStorage.removeItem(KEY + s)); }
 function finish(screen, all = false) {
-  (all ? Object.keys(TOURS) : screen === 'map' ? ['map', 'new-1.3', 'new-1.6', 'new-1.7'] : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
+  (all ? Object.keys(TOURS) : screen === 'map' ? ['map', 'new-1.3', 'new-1.6', 'new-1.7', 'new-1.8'] : [screen]).forEach((s) => localStorage.setItem(KEY + s, 'done'));
   active?.el.remove();
   removeEventListener('resize', place);
   active = null;
@@ -60,11 +63,12 @@ function finish(screen, all = false) {
 let lastTouch = 0;
 addEventListener('pointerdown', () => { lastTouch = Date.now(); }, true);
 
-const SCREEN_OF = { 'new-1.3': 'map', 'new-1.6': 'map', 'new-1.7': 'map' };
+const SCREEN_OF = { 'new-1.3': 'map', 'new-1.6': 'map', 'new-1.7': 'map', 'new-1.8': 'map' };
 export function maybeStartTour(screen, { delay = 700, force = false } = {}) {
   if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.3')) screen = 'new-1.3';
   else if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.6')) screen = 'new-1.6';
   else if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.7')) screen = 'new-1.7';
+  else if (screen === 'map' && !force && tourDone('map') && !tourDone('new-1.8')) screen = 'new-1.8';
   if (!TOURS[screen] || (!force && tourDone(screen))) return;
   const openedAt = Date.now();
   setTimeout(() => {

@@ -1,0 +1,15 @@
+<resources>
+    <!-- Tabi's palette: washi grey, sumi ink, ai-iro indigo; status colours from Tokyo Metro lines -->
+    <color name="bg">#F4F5F3</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface2">#ECEEEA</color>
+    <color name="ink">#1A1D21</color>
+    <color name="ink2">#5B6168</color>
+    <color name="indigo">#2B3A67</color>
+    <color name="on_indigo">#FFFFFF</color>
+    <color name="indigo_text">#2B3A67</color>
+    <color name="green">#00A672</color>
+    <color name="amber">#F39700</color>
+    <color name="red">#C8102E</color>
+    <color name="icon_bg">#2B3A67</color>
+</resources>

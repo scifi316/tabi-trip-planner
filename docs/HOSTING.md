@@ -309,6 +309,7 @@ These environment variables go in `.env` and control timing.
 | `HA_FAILBACK_MS` | 120000 | How long the primary must be healthy before asking for its role back |
 | `HA_SNAPSHOT_MS` | 15000 | How often the leader uploads a snapshot when data changed |
 | `PHOTO_LIMIT_MB` | 2048 | Total space for Picture a day photos; uploads stop with a clear message at this size |
+| `CHAT_MEDIA_LIMIT_MB` | 3072 | Total space for photos and GIFs sent in chat |
 
 Worst-case takeover time is TTL + grace + backup extra, which is about 60 seconds.
 
@@ -329,3 +330,25 @@ Since 1.7 people can get Tabi's notifications on the lock screen while Tabi is c
 Photos are shrunk in the browser before upload: at most 2048 px, WebP or JPEG, usually 200 to 600 KB, plus a small thumbnail, with location and camera data removed. They're stored like receipts: on the serving machine's disk and in R2 under `blobs/`, so the backup has them too.
 
 Five a day for a two-week trip is roughly 50 MB, a small part of R2's free 10 GB. `PHOTO_LIMIT_MB` caps the total. See [FEASIBILITY.md](FEASIBILITY.md) for the estimates, and for chat and games.
+
+## Group chat: GIF search and storage
+
+Chat photos are shrunk on the phone like Picture a day ones and stored the same way (disk plus R2 `blobs/`). Only people in a chat can load its pictures. `CHAT_MEDIA_LIMIT_MB` (default 3 GB) caps their total.
+
+**GIF search** uses KLIPY. Tenor's API closed on 30 June 2026. To turn it on:
+
+1. Get a free API key at <https://partner.klipy.com>.
+2. Set `KLIPY_API_KEY` in `.env` on **both** servers, then run `bash /opt/tabi/deploy/update.sh` on each.
+
+Without a key the GIF button is hidden, and people can still send GIFs saved on their phone.
+
+How it works, in line with KLIPY's terms:
+- Searches go through Tabi, so the key stays on the server and nobody's identity is sent. Results are cached for 10 minutes, and each person is limited to 30 searches a minute.
+- The GIFs themselves load straight from KLIPY and are never copied or cached; the service worker skips them.
+- The search box says "Search KLIPY" and the picker says "Powered by KLIPY".
+
+## The Android app
+
+Building, signing and publishing it are in [ANDROID.md](ANDROID.md). Nothing needs setting up on the servers.
+
+Once an admin uploads the APK in Settings, Tabi serves `/.well-known/assetlinks.json` itself. It's public, past the private-link gate, because Google fetches it without cookies, and it only names the app's package and signing fingerprint. If something in front of Tabi blocks `/.well-known/`, allow it for that file.

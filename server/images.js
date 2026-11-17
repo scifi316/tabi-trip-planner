@@ -1,11 +1,16 @@
 // Read the pixel size of a JPEG, PNG or WebP from its header, without decoding it.
-// Returns { type: 'jpg' | 'png' | 'webp', width, height } or null.
+// Returns { type: 'jpg' | 'png' | 'webp' | 'gif', width, height } or null.
 export function imageSize(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 30) return null;
 
   // PNG: signature, then the IHDR chunk
   if (buf.readUInt32BE(0) === 0x89504e47 && buf.toString('ascii', 12, 16) === 'IHDR') {
     return { type: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  }
+
+  // GIF (chat uploads keep their animation): logical screen size right after the signature
+  if (buf.toString('ascii', 0, 6) === 'GIF87a' || buf.toString('ascii', 0, 6) === 'GIF89a') {
+    return { type: 'gif', width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
   }
 
   // JPEG: walk the markers to the first start-of-frame

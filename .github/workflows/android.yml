@@ -1,0 +1,101 @@
+# Builds the Tabi Android app (android/) and publishes the APK as a pre-release named "android-build".
+# Signing: add the repository secrets ANDROID_KEYSTORE_B64 and ANDROID_KEYSTORE_PASSWORD (see docs/ANDROID.md).
+# Without them the build still works, signed with a throwaway key and marked as a test build:
+# fine for trying it out, but phones can't update from a test build to a real one without uninstalling.
+name: Android app
+
+on:
+  push:
+    paths: ['android/**', '.github/workflows/android.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TABI_HOST: ${{ vars.TABI_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Signing key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          KS="$RUNNER_TEMP/tabi.jks"
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$KS"
+            PASS="$KS_PASS"; TEST=false
+          else
+            PASS=$(openssl rand -hex 16); TEST=true
+            keytool -genkeypair -keystore "$KS" -alias tabi -keyalg RSA -keysize 2048 -validity 3650 \
+              -storepass "$PASS" -keypass "$PASS" -dname "CN=Tabi test build" >/dev/null 2>&1
+            echo "::warning::No signing secrets set: this is a TEST build with a throwaway key."
+          fi
+          echo "::add-mask::$PASS"
+          ALIAS=$(keytool -list -keystore "$KS" -storepass "$PASS" 2>/dev/null | awk -F, '/PrivateKeyEntry/{print $1; exit}')
+          CERT=$(keytool -list -v -keystore "$KS" -alias "$ALIAS" -storepass "$PASS" 2>/dev/null | awk '/SHA256:/{print $2; exit}')
+          [ -n "$CERT" ] || { echo "Couldn't read the signing key. Check ANDROID_KEYSTORE_B64 and ANDROID_KEYSTORE_PASSWORD."; exit 1; }
+          {
+            echo "TABI_KEYSTORE=$KS"; echo "TABI_KEYSTORE_PASSWORD=$PASS"; echo "TABI_KEY_ALIAS=$ALIAS"
+            echo "TABI_TEST=$TEST"; echo "TABI_CERT=$CERT"
+          } >> "$GITHUB_ENV"
+
+      # The server reads this from the APK when an admin uploads it: version, and the key that
+      # signed it (so the site can vouch for the app and phones see Tabi full screen).
+      - name: App info for the server
+        run: |
+          V=$(sed -n 's/^versionName=//p' android/version.properties)
+          C=$(sed -n 's/^versionCode=//p' android/version.properties)
+          mkdir -p android/app/src/main/assets
+          printf '{"package":"app.tabi.trip","versionName":"%s","versionCode":%s,"cert":"%s","test":%s,"host":"%s","commit":"%s","builtAt":"%s"}\n' \
+            "$V" "$C" "$TABI_CERT" "$TABI_TEST" "${TABI_HOST:-trip.sanechristmas.party}" "${GITHUB_SHA::7}" "$(date -u +%FT%TZ)" > android/app/src/main/assets/tabi-app.json
+          cat android/app/src/main/assets/tabi-app.json
+          echo "APP_VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: gradle -p android assembleRelease --no-daemon --stacktrace --console=plain 2>&1 | tee build.log
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SUFFIX=$([ "$TABI_TEST" = true ] && echo "-test" || true)
+          OUT="Tabi-$APP_VERSION$SUFFIX.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$OUT"
+          SUM=$(sha256sum "$OUT" | cut -d' ' -f1)
+          gh release delete android-build --yes --cleanup-tag >/dev/null 2>&1 || true
+          NOTES="Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. SHA-256 $SUM."
+          [ "$TABI_TEST" = true ] && NOTES="$NOTES TEST BUILD: signed with a throwaway key (no signing secrets set)."
+          gh release create android-build "$OUT" --prerelease --target "$GITHUB_SHA" --title "Tabi for Android $APP_VERSION$SUFFIX" --notes "$NOTES"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="Android build OK: $OUT ($(du -h "$OUT" | cut -f1)), SHA-256 $SUM. Download it from the android-build pre-release." >/dev/null
+
+      # Errors go on the commit as a comment, so they can be read without opening the Actions log
+      - name: Report a failed build
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f build.log ] || echo "(no build log: an earlier step failed)" > build.log
+          { echo 'Android build failed.'; echo; echo '```'
+            grep -E '^e: |error:|What went wrong|FAILURE|Could not|> ' build.log | head -80
+            echo '--- last lines ---'; tail -n 60 build.log
+            echo '```'; } > report.md
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -F body=@report.md >/dev/null

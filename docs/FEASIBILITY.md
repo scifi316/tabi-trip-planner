@@ -1,6 +1,6 @@
 # Feasibility: group chat, Connect 4 and pool
 
-Written for 1.7.0 (November 2026). Short version: **all three fit on the current setup** (one 1 GB DigitalOcean droplet, the home server as backup, Cloudflare R2 for files) with no new monthly costs. Storage and computing power aren't the constraint; the work is in the interface, and in each case it's about one iteration.
+Written for 1.7.0 (November 2026). **Update for 1.8.0: the group chat is built**, as described below, with KLIPY for GIF search. Short version: **all three fit on the current setup** (one 1 GB DigitalOcean droplet, the home server as backup, Cloudflare R2 for files) with no new monthly costs. Storage and computing power aren't the constraint; the work is in the interface, and in each case it's about one iteration.
 
 ## What we have to work with
 
