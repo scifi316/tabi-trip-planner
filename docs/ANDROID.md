@@ -20,6 +20,14 @@ iPhones keep using the web app, plus OwnTracks for background sharing. Apple doe
    It starts sharing as soon as location is allowed, and switches "Share my location" on in Tabi if it was off.
 4. From then on, open Tabi from the home screen icon.
 
+**Updates** install over the app you have, from inside it (app 1.1.0 and later):
+
+- When an admin publishes a new version, you get a notification: *An update to the Tabi app is ready*.
+- Tap it, or tap **Update now** on the app's Location sharing screen, or **Update the app** in Tabi's Settings.
+- The first time, Android asks whether Tabi may install apps: turn it on and come back. The update then carries on by itself.
+- Android asks "Do you want to update this app?". Tap **Update**. You stay connected and keep sharing.
+- On Android 12 and later, once one update has been installed this way, later ones can install without asking at all.
+
 To stop: use **Stop sharing** in the notification, or long-press the app icon and choose **Location sharing**. Turning "Share my location" off in Tabi pauses the app too. It then just checks in every 15 minutes to see whether it's back on.
 
 ### Battery
@@ -59,6 +67,12 @@ Keep `tabi.jks` and its password somewhere safe, such as a password manager. If 
 
 After adding the secrets, run the workflow again (Actions › Android app › Run workflow). The new build is called `Tabi-1.0.0.apk`, without `-test`.
 
+### Its own release track
+
+Android versions live in `android/version.properties`, apart from the main Tabi version in `package.json`. An app update needs no server release and no deploy.
+
+When a change under `android/` reaches **main** and the signing secrets are set, the workflow also publishes a permanent release called **Tabi for Android x.y.z** (tag `android-vx.y.z`). That's the file to upload. Builds from other branches, and test-signed builds, only update the rolling **android-build** pre-release.
+
 ### Publishing a build to the group
 
 1. Download the APK from the **android-build** release.
@@ -73,7 +87,14 @@ Tabi reads the version and signing key from inside the APK. It warns you if:
 
 As soon as it's uploaded, people on Android see the download in Settings. Phones that already have the app get an "update ready" notification within about 15 minutes.
 
-**Releasing an update:** raise both `versionCode` and `versionName` in `android/version.properties`, push, then upload the new APK. Phones only treat it as an update when `versionCode` goes up.
+**Releasing an update:**
+1. Raise both `versionCode` and `versionName` in `android/version.properties`, and merge to main.
+2. Download the APK from the new **Tabi for Android x.y.z** release.
+3. Upload it in Settings.
+
+Phones only treat it as an update when `versionCode` goes up. Within about 10 minutes, phones sharing their location are told an update is ready.
+
+**Updates only install in place when both versions are signed with the same key.** Test builds each get a new throwaway key, so a phone on a test build has to uninstall it once to move to the properly signed app. After that, every update installs in place.
 
 ### Full screen, without an address bar
 
@@ -101,10 +122,12 @@ android/
     TwaActivity.kt            opens https://<host>/?app=android&appv=<code> full screen in Chrome
     SetupActivity.kt          the Location sharing screen; handles tabi://setup links
     LocationService.kt        foreground service: locations to /api/owntracks (OwnTracks JSON)
+    Updater.kt                in-place updates: check, download, verify, hand to Android's installer
     BootReceiver.kt           carries on after a restart (needs "Allow all the time")
     Config.kt, Perms.kt       saved settings; which permissions are granted
 ```
 
 - **Connecting:** Settings builds a link `tabi://setup?h=<host>&g=<private-link key>&u=<name>&t=<OwnTracks token>&start=1`. The app keeps these values in its private storage. "Make a new token" in Tabi disconnects the phone; the app then stops and says so.
+- **Updates:** the app asks `GET /api/app/latest` (signing in with name + OwnTracks token, like locations) for the version and SHA-256, downloads `GET /api/app/tabi.apk` the same way, checks the SHA-256, and installs it with Android's `PackageInstaller`. Android itself refuses an update signed with another key.
 - **Server replies:** on every location, the server answers with `X-Tabi-Sharing: on|off` (the app pauses when it's off) and, once an app has been uploaded, `X-Tabi-App-Latest: <versionCode>` (the app offers the update).
 - **Status in Settings:** the "Share even when Tabi is closed" status says "from the Tabi app" when the app is the one sending.

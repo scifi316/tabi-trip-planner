@@ -78,6 +78,13 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const getTrip = () => ({ ...DEFAULT_TRIP, ...getSetting('trip', {}) });
   // The Android app an admin uploaded (see apk.js); what everyone sees of it
   const androidApp = () => getSetting('androidApp', null);
+  async function serveApk(req, res, app) {
+    const buf = app && await blobs.get(app.key);
+    if (!buf) return send(res, 404, { error: 'The Android app hasn’t been uploaded yet.' });
+    res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': buf.length,
+      'Content-Disposition': `attachment; filename="Tabi-${app.versionName}${app.test ? '-test' : ''}.apk"`, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+    return res.end(req.method === 'HEAD' ? undefined : buf);
+  }
   const androidPublic = (a = androidApp()) => (a ? { version: a.versionName, code: a.versionCode, size: a.size, at: a.at, test: !!a.test } : null);
 
   const cache = {
@@ -664,6 +671,21 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return send(res, 200, { ok: true });
       }
 
+      // The Android app updates itself: it asks what the latest version is and downloads it, signing
+      // in the way it does for locations (name + OwnTracks token). The download's SHA-256 is its
+      // file name in storage, so the app can check it got exactly what Tabi published.
+      if ((p === '/api/app/latest' || p === '/api/app/tabi.apk') && (req.method === 'GET' || req.method === 'HEAD') && String(req.headers.authorization || '').startsWith('Basic ')) {
+        const [name, tok] = Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString().split(':');
+        const u = name && (db.prepare('SELECT * FROM users WHERE name = ?').get(name) || db.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE').get(name));
+        if (!u || u.removed_at || !tok || !u.owntracks_token || tok !== u.owntracks_token) return send(res, 401, { error: 'Bad credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        const app = androidApp();
+        if (p === '/api/app/latest') {
+          return send(res, 200, app ? { version: app.versionName, code: app.versionCode, size: app.size, sha256: app.key.split('.')[0], test: !!app.test } : { version: null, code: 0 }, { 'Cache-Control': 'no-store' });
+        }
+        devPush('op', { user: u.name, op: 'android.download', ok: !!app, version: app?.versionName, via: 'app' });
+        return serveApk(req, res, app);
+      }
+
       // OwnTracks HTTP mode: Basic auth with <name>:<owntracks token>
       if (p === '/api/owntracks' && req.method === 'POST') {
         const h = String(req.headers.authorization || '');
@@ -1021,14 +1043,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         broadcast({ t: 'app', app: null });
         return send(res, 200, { ok: true });
       }
-      if (p === '/api/app/tabi.apk' && (req.method === 'GET' || req.method === 'HEAD')) {
-        const app = androidApp();
-        const buf = app && await blobs.get(app.key);
-        if (!buf) return send(res, 404, { error: 'The Android app hasn’t been uploaded yet.' });
-        res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': buf.length,
-          'Content-Disposition': `attachment; filename="Tabi-${app.versionName}${app.test ? '-test' : ''}.apk"`, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
-        return res.end(req.method === 'HEAD' ? undefined : buf);
-      }
+      if (p === '/api/app/tabi.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res, androidApp());
       const cf = p.match(/^\/api\/chat\/f\/([a-f0-9]{64}\.(?:jpg|png|webp|gif))$/);
       if (cf && req.method === 'GET') {
         if (!chat.canSeeFile(user.id, cf[1])) return send(res, 404, { error: 'Not found' });
