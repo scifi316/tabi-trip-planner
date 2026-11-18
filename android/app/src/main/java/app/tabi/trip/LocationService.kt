@@ -1,6 +1,7 @@
 package app.tabi.trip
 
 import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -22,6 +23,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.text.format.DateFormat
 import android.util.Base64
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -41,19 +43,26 @@ import java.util.concurrent.Executors
  * shows its notification, with a Stop button) that posts to Tabi's OwnTracks address, the same one
  * the OwnTracks app uses, so the server needs nothing new.
  *
- * Battery: balanced accuracy (Wi-Fi and cell towers, GPS only when it's already on), at most once
- * a minute and only after moving 15 m, plus a check-in every 15 minutes when still.
+ * Battery: balanced accuracy (Wi-Fi and cell towers, GPS only when it's already on). A location is
+ * sent when you've moved 25 m (at most every 30 seconds), and at least every 5 minutes when you
+ * haven't, so friends never see you greyed out (Tabi greys people out after 15 minutes).
+ *
+ * TA-4: check-ins use an alarm on the real-time clock. A Handler timer counts only the time the
+ * phone is awake, so in a pocket it hardly moved: a phone standing still went quiet, and one
+ * paused because sharing was off in Tabi could stay paused for hours after it was turned on.
  */
 class LocationService : Service() {
     companion object {
         const val ACTION_STOP = "app.tabi.trip.STOP"
+        const val ACTION_PING = "app.tabi.trip.PING"
         private const val ONGOING = 7
         private const val ALERT = 8
         private const val UPDATE = 9
         private const val INTERVAL = 60_000L
-        private const val FASTEST = 20_000L
-        private const val MIN_METRES = 15f
-        private const val HEARTBEAT = 15 * 60_000L
+        private const val FASTEST = 30_000L
+        private const val MOVE_METRES = 25f
+        private const val KEEP_FRESH = 5 * 60_000L
+        private const val CHECK_IN = 10 * 60_000L
 
         @Volatile
         var running = false
@@ -61,6 +70,11 @@ class LocationService : Service() {
 
         fun start(ctx: Context) {
             ctx.startForegroundService(Intent(ctx, LocationService::class.java))
+        }
+
+        /** Start sharing if it isn't running, and send a location now (opening Tabi does this). */
+        fun ping(ctx: Context) {
+            ctx.startForegroundService(Intent(ctx, LocationService::class.java).setAction(ACTION_PING))
         }
 
         fun stop(ctx: Context) {
@@ -106,12 +120,6 @@ class LocationService : Service() {
         override fun onProviderDisabled(provider: String) {}
     }
 
-    private val heartbeat = object : Runnable {
-        override fun run() {
-            if (System.currentTimeMillis() - lastSentAt > HEARTBEAT - 60_000L) ping()
-            main.postDelayed(this, HEARTBEAT)
-        }
-    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -141,16 +149,15 @@ class LocationService : Service() {
         }
         running = true
         if (!updating && !paused) beginUpdates()
-        main.removeCallbacks(heartbeat)
-        main.postDelayed(heartbeat, HEARTBEAT)
-        ping() // straight away, so the group sees you as soon as it's switched on
+        scheduleCheckIn()
+        ping() // straight away (and on every check-in), so the group sees you as soon as it's switched on
         return START_STICKY
     }
 
     override fun onDestroy() {
         running = false
         endUpdates()
-        main.removeCallbacks(heartbeat)
+        cancelCheckIn()
         io.shutdown()
         super.onDestroy()
     }
@@ -162,9 +169,9 @@ class LocationService : Service() {
         if (Perms.playServices(this)) {
             try {
                 val f = LocationServices.getFusedLocationProviderClient(this)
+                // No minimum distance: a fix every minute even when still, so onFix can keep you fresh
                 val req = LocationRequest.Builder(Priority.PRIORITY_BALANCED_POWER_ACCURACY, INTERVAL)
                     .setMinUpdateIntervalMillis(FASTEST)
-                    .setMinUpdateDistanceMeters(MIN_METRES)
                     .build()
                 f.requestLocationUpdates(req, callback, Looper.getMainLooper())
                 fused = f
@@ -177,7 +184,7 @@ class LocationService : Service() {
         manager = m
         for (p in listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)) {
             try {
-                if (m.isProviderEnabled(p)) m.requestLocationUpdates(p, INTERVAL, MIN_METRES, listener, Looper.getMainLooper())
+                if (m.isProviderEnabled(p)) m.requestLocationUpdates(p, INTERVAL, 0f, listener, Looper.getMainLooper())
             } catch (e: Exception) {
             }
         }
@@ -191,7 +198,23 @@ class LocationService : Service() {
         updating = false
     }
 
-    /** A fresh location right now (on start, and every 15 minutes when nothing has moved). */
+    // Wakes the service every 10 minutes of real time, asleep or not (Android may stretch it a little in deep sleep)
+    private fun checkInIntent() = PendingIntent.getService(this, 5,
+        Intent(this, LocationService::class.java).setAction(ACTION_PING), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+    private fun scheduleCheckIn() {
+        try {
+            getSystemService(AlarmManager::class.java)?.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + CHECK_IN, checkInIntent())
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun cancelCheckIn() {
+        try { getSystemService(AlarmManager::class.java)?.cancel(checkInIntent()) } catch (e: Exception) { }
+    }
+
+    /** A fresh location right now (on start, when Tabi opens, and on every check-in). */
     @SuppressLint("MissingPermission")
     private fun ping() {
         if (!Perms.location(this)) return
@@ -217,9 +240,13 @@ class LocationService : Service() {
 
     private fun onFix(loc: Location, trigger: String, force: Boolean) {
         val prev = lastSent
-        if (!force && prev != null && System.currentTimeMillis() - lastSentAt < FASTEST && loc.distanceTo(prev) < 50f) {
-            pending = loc
-            return
+        if (!force && prev != null) {
+            val since = System.currentTimeMillis() - lastSentAt
+            val moved = loc.distanceTo(prev) >= MOVE_METRES
+            if (since < FASTEST || (!moved && since < KEEP_FRESH)) {
+                pending = loc
+                return
+            }
         }
         send(loc, trigger)
     }
@@ -250,6 +277,7 @@ class LocationService : Service() {
         val gate = cfg.gate
         val address = "https://${cfg.host}/api/owntracks" + (if (gate.isNullOrBlank()) "" else "?gate=" + Uri.encode(gate))
         var result = "error"
+        cfg.lastTryAt = System.currentTimeMillis()
         try {
             val c = URL(address).openConnection() as HttpURLConnection
             try {
@@ -263,6 +291,8 @@ class LocationService : Service() {
                 c.setRequestProperty("X-Limit-D", "tabi-android")
                 c.outputStream.use { it.write(body.toString().toByteArray()) }
                 val code = c.responseCode
+                cfg.lastCode = code
+                cfg.lastError = null
                 try { (if (code < 400) c.inputStream else c.errorStream)?.use { it.readBytes() } } catch (e: Exception) { }
                 if (code in 200..299) {
                     lastSent = loc
@@ -284,6 +314,8 @@ class LocationService : Service() {
         } catch (e: Exception) {
             pending = loc
             result = "offline"
+            cfg.lastCode = 0
+            cfg.lastError = (e.javaClass.simpleName + ": " + (e.message ?: "")).take(160)
         }
         cfg.lastResult = result
         main.post {

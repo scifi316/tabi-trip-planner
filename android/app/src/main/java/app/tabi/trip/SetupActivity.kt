@@ -207,6 +207,8 @@ class SetupActivity : Activity() {
         val on = cfg.enabled && LocationService.running
         add(status(on), 20)
         add(if (on) secondary("Stop sharing") { stopSharing() } else primary("Start sharing") { chain = true; asked.clear(); next() }, 12)
+        if (on) add(secondary("Send my location now") { LocationService.ping(this); ui.postDelayed({ render() }, 3_000L) }, 8)
+        lastTry()?.let { add(label(it, 12.5f, R.color.ink2), 10) }
 
         add(label("To keep it working", 14f, R.color.ink2, true), 28)
         val loc = Perms.location(this)
@@ -246,6 +248,19 @@ class SetupActivity : Activity() {
         col.addView(label(text, 14.5f, R.color.ink2).apply { setPadding(0, dp(2), 0, 0) })
         c.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         return c
+    }
+
+    // For finding problems: when the app last tried, and what Tabi answered
+    private fun lastTry(): String? {
+        if (cfg.lastTryAt <= 0) return null
+        val what = when (val code = cfg.lastCode) {
+            0 -> "couldn’t reach Tabi" + (cfg.lastError?.let { " ($it)" } ?: "")
+            200 -> "Tabi took it" + if (cfg.lastResult == "paused") ", but sharing is off in Tabi" else ""
+            401 -> "Tabi didn’t accept the name and token (401)"
+            404 -> "Tabi wasn’t found: the private link key may be wrong (404)"
+            else -> "Tabi answered $code"
+        }
+        return "Last try ${ago(cfg.lastTryAt)}: $what."
     }
 
     private fun lastText(prefix: String) = if (cfg.lastOkAt > 0) prefix + ago(cfg.lastOkAt) else ""

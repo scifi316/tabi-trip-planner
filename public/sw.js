@@ -1,6 +1,6 @@
 // Service worker: app shell works offline; map assets are cache-first so saved areas
 // keep working without a connection.
-const VERSION = 'tabi-shell-v7';
+const VERSION = 'tabi-shell-v8';
 const MAP_CACHE = 'tabi-map-v1';
 const SHELL = [
   '/', '/index.html', '/app.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
