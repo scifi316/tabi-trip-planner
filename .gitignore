@@ -11,3 +11,9 @@ android/local.properties
 android/app/src/main/assets/tabi-app.json
 *.jks
 *.keystore
+
+# Dev stack (dev/README in docs/DEVELOPMENT.md): its data, pull request checkouts, settings
+dev/.data/
+dev/.data-before-pr/
+dev/.pr/
+dev/.env

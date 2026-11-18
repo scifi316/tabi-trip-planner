@@ -5,9 +5,13 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --env-file-if-exists=.env --watch --disable-warning=ExperimentalWarning server/index.js",
+    "dev": "node dev/stack.mjs",
     "test": "node --test \"test/*.test.mjs\"",
-    "test:ha": "bash test/ha-failover.sh"
+    "test:ha": "bash test/ha-failover.sh",
+    "dev:fresh": "node dev/stack.mjs --fresh --seed",
+    "dev:pr": "node dev/pr.mjs",
+    "dev:failover": "node dev/failover.mjs",
+    "dev:seed": "node dev/seed.mjs"
   },
   "license": "MIT",
   "dependencies": {

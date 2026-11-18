@@ -1,0 +1,85 @@
+# The dev stack in Docker: the production image (../Dockerfile), with production's two-node layout.
+#
+#   docker compose -f dev/docker-compose.yml up --build           start (Ctrl+C stops)
+#   docker compose -f dev/docker-compose.yml --profile phone up   also a temporary https address for phones
+#   docker compose -f dev/docker-compose.yml down -v              stop and delete the dev data
+#   node dev/pr.mjs 15 --docker                                   a pull request, built from its own checkout
+#   node dev/failover.mjs --docker                                failover drill
+#
+#   browser ─▶ edge :8080 (stand-in for Cloudflare) ─▶ the leader: primary or backup ─▶ s3 (stand-in for R2)
+#
+# Settings: dev/.env (copy dev/.env.example). With TUNNEL_TOKEN set to a tunnel of your own (for a
+# dev hostname), the leader runs cloudflared exactly as production does.
+x-node: &node
+  build:
+    context: ${TABI_SRC:-..}
+  image: tabi:dev
+  restart: always              # like production: a node that loses the lease exits and comes back as standby
+  env_file:
+    - path: .env
+      required: false
+  depends_on: [s3]
+
+x-node-env: &node-env
+  HA_MODE: "on"
+  TRUST_PROXY: "true"
+  S3_ENDPOINT: http://s3:9000
+  S3_BUCKET: tabi-dev
+  S3_ACCESS_KEY_ID: dev
+  S3_SECRET_ACCESS_KEY: dev
+  # Faster than production (30 s lease, 2 min failback) so drills take seconds
+  HA_LEASE_TTL_MS: "8000"
+  HA_RENEW_MS: "2000"
+  HA_GRACE_MS: "3000"
+  HA_BACKUP_EXTRA_MS: "3000"
+  HA_FAILBACK_MS: "20000"
+  HA_SNAPSHOT_MS: "5000"
+
+services:
+  s3:
+    image: tabi:dev
+    build:
+      context: ${TABI_SRC:-..}
+    command: ["node", "/dev-tools/s3.mjs", "--port", "9000", "--dir", "/s3"]
+    volumes:
+      - ./:/dev-tools:ro
+      - s3:/s3
+    ports: ["9000:9000"]       # http://localhost:9000/__list shows what's stored
+    healthcheck: { disable: true }
+
+  primary:
+    <<: *node
+    environment:
+      <<: *node-env
+      HA_NODE: primary
+      HA_PRIORITY: primary
+    volumes: ["primary:/data"]
+
+  backup:
+    <<: *node
+    environment:
+      <<: *node-env
+      HA_NODE: backup
+      HA_PRIORITY: backup
+    volumes: ["backup:/data"]
+
+  edge:
+    image: tabi:dev
+    command: ["node", "/dev-tools/edge.mjs", "--port", "8080", "--nodes", "primary=http://primary:8080,backup=http://backup:8080"]
+    volumes: ["./:/dev-tools:ro"]
+    ports: ["8080:8080"]
+    depends_on: [primary, backup]
+    healthcheck: { disable: true }
+
+  # A temporary public https address (https://<random>.trycloudflare.com), shown in the log
+  phone:
+    profiles: [phone]
+    image: tabi:dev
+    command: ["cloudflared", "tunnel", "--no-autoupdate", "--url", "http://edge:8080"]
+    depends_on: [edge]
+    healthcheck: { disable: true }
+
+volumes:
+  s3:
+  primary:
+  backup:
