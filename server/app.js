@@ -45,7 +45,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
 
   // Developer console: separate secret (DEV_KEY). Read-only views of the database, live locations,
   // OwnTracks traffic, outbound calls and server logs. It also lets the holder past the private-link gate.
+  // Password reset links from the console can take over any account, so they're off unless
+  // DEV_RESET_LINKS=on (for the day the only admin is locked out).
   const DEV_KEY = env.DEV_KEY || '';
+  const DEV_RESET_LINKS = /^(1|true|on|yes)$/i.test(env.DEV_RESET_LINKS || '');
   const devToken = DEV_KEY ? crypto.createHmac('sha256', DEV_KEY).update('tabi-dev-v1').digest('base64url').slice(0, 32) : '';
   const isDev = (req) => { const c = DEV_KEY && parseCookies(req).tabi_dev; return !!c && auth.safeEqual(c, devToken); };
 
@@ -2008,6 +2011,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     // Accounts: a one-time password reset link for anyone (e.g. when the only admin is the one locked out).
     if (p === '/api/dev/reset-link' && req.method === 'POST') {
       if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-site request refused.' });
+      if (!DEV_RESET_LINKS) return send(res, 403, { error: 'Reset links are off. Set DEV_RESET_LINKS=on in .env and restart to turn them on.' });
       return readBody(req).then((b) => {
         const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+b.userId);
         if (!target) return send(res, 404, { error: 'No such person on the trip.' });
@@ -2058,14 +2062,14 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         build: BUILD,
         trip: { ...tripForClient(null), joinCode: undefined },
         config: CONFIG,
-        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180) },
+        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180), resetLinks: DEV_RESET_LINKS },
       });
     }
     if (p === '/api/dev/people') {
       const lastOt = {};
       for (const e of devRecent('owntracks', { limit: 300 })) if (e.userId) lastOt[e.userId] = e;
       const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
-      return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
+      return send(res, 200, { resetLinks: DEV_RESET_LINKS, people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
         id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
         removedAt: u.removed_at || null, recoverySet: !!u.recovery_hash, recoveryStatus: recoveryStatus(u), hasPassword: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(u.pass_hash),
         resetLink: db.prepare('SELECT created_at, expires_at FROM password_resets WHERE user_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1').get(u.id, now()) || null,
