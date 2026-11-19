@@ -11,6 +11,15 @@ http.createServer(async (req, res) => {
   if (req.url === '/__up') { down = false; return res.end('up'); }
   if (down) { res.writeHead(503); return res.end(); }
   const key = decodeURIComponent(req.url.split('?')[0]);
+  // ListObjectsV2 (for pruning old backups): GET /<bucket>?list-type=2&prefix=...
+  const q = new URL(req.url, 'http://x').searchParams;
+  if (req.method === 'GET' && q.get('list-type') === '2') {
+    const bucket = key.split('/').filter(Boolean)[0];
+    const want = `/${bucket}/${q.get('prefix') || ''}`;
+    const items = [...store.entries()].filter(([k]) => k.startsWith(want)).sort();
+    res.writeHead(200, { 'content-type': 'application/xml' });
+    return res.end(`<ListBucketResult><IsTruncated>false</IsTruncated>${items.map(([k, o]) => `<Contents><Key>${k.slice(bucket.length + 2)}</Key><Size>${o.body.length}</Size></Contents>`).join('')}</ListBucketResult>`);
+  }
   const chunks = []; for await (const c of req) chunks.push(c);
   const body = Buffer.concat(chunks);
   const obj = store.get(key);

@@ -14,8 +14,12 @@ This guide puts Tabi at **`https://trip.sanechristmas.party`** behind a private 
                 └──────── Cloudflare R2 ───────┘
                           lease.json            who is serving right now
                           db/latest.sqlite.gz   database snapshot, taken when data changes (≈15 s)
-                          db/history/…          hourly snapshots
-                          blobs/…               receipt photos
+                          db/history/…          hourly snapshots (the last 48 hours)
+                          blobs/…               photos, receipts, profile photos, emojis
+                               │
+                    Backblaze B2 (optional, "cold")
+                          blobs/…               a copy of every file; old full-size photos only live here
+                          db/history/…          one snapshot a day for 30 days, one a week for a year
 ```
 
 Why Singapore: DigitalOcean has no region in Japan or Korea, and Singapore is the closest of the regions it offers. Phones connect to Cloudflare's Tokyo edge, so TLS setup is local. The app also opens instantly from its cached copy, so the extra distance to Singapore is hard to notice.
@@ -41,6 +45,7 @@ At most about 15 seconds of edits can be lost, and only if the droplet crashes h
 | DigitalOcean Basic droplet, 1 vCPU / 1 GB, SGP1 | $6 a month (Regular SSD) or $8 (Premium Intel NVMe); both are plenty for 8 people |
 | Cloudflare DNS and Tunnel | Free |
 | Cloudflare R2 | Free tier (10 GB) covers this easily |
+| Backblaze B2 (optional) | First 10 GB free, then $6.95 per TB a month; downloads free up to 3× what's stored |
 | Home server | Whatever you already run Docker on |
 
 Skip DigitalOcean's paid backups: the R2 snapshots already cover them.
@@ -64,7 +69,27 @@ Anything else on the domain keeps working if you recreate its DNS records in Clo
 1. Go to **R2 Object Storage**, create a bucket named `tabi`, and set the location hint to **Asia-Pacific**.
 2. Go to **R2 → Manage API tokens → Create API token**. Choose *Object Read & Write* and limit it to the `tabi` bucket.
 3. Keep these three values: the **Access Key ID**, the **Secret Access Key**, and the **S3 endpoint** (`https://<account-id>.r2.cloudflarestorage.com`).
-4. Optional: add a lifecycle rule that deletes `tabi/db/history/` objects after 30 days.
+
+You don't need lifecycle rules: Tabi now deletes old snapshots itself (see [Storage tiers](#storage-tiers-r2-and-backblaze-b2)).
+
+### 2b. Backblaze B2 (optional, recommended)
+
+A second copy of every file, at a different company, and room for photos beyond R2's free 10 GB. Skip it and Tabi works as before, with R2 only. You can add it any time later.
+
+1. Make a Backblaze account at <https://www.backblaze.com/sign-up/cloud-storage>. Any region works: B2 only serves older photos, so distance matters little.
+2. **Buckets → Create a Bucket.** Give it a unique name (for example `tabi-cold-<something>`), keep it **Private**, and leave Object Lock off.
+3. On the new bucket, open **Lifecycle Settings** and choose **Keep only the last version of the file**. B2 keeps every old version by default, so deleted files would otherwise still take up space.
+4. Note the bucket's **Endpoint**, for example `s3.us-west-004.backblazeb2.com`.
+5. **Application Keys → Add a New Application Key.** Allow access to that bucket only, with *Read and Write*. Copy the **keyID** and **applicationKey** right away: Backblaze shows the second one only once. (The master application key doesn't work with B2's S3-compatible API.)
+6. Add these to `.env` on **both** machines (`/opt/tabi/deploy/droplet/.env` and the home server's), then run `bash /opt/tabi/deploy/update.sh` on each:
+   ```
+   COLD_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
+   COLD_S3_BUCKET=tabi-cold-<something>
+   COLD_S3_ACCESS_KEY_ID=<keyID>
+   COLD_S3_SECRET_ACCESS_KEY=<applicationKey>
+   ```
+   The region is read from the endpoint. When it's on, the log says `[storage] files: this disk, then R2, then B2`.
+7. In the developer console, **Overview → File storage** shows R2 and B2 filling up. Within about 10 minutes every existing file has a copy in B2.
 
 ### 3. Cloudflare Tunnel
 
@@ -281,8 +306,10 @@ Since 1.7 the app retries by itself a minute apart, clearing its offline copy on
 
 ## Restoring an older backup
 
+R2 has the last 48 hours of hourly snapshots under `tabi/db/history/`. With B2 set up, older ones (one a day for 30 days, one a week for a year) are in the B2 bucket under the same path.
+
 ```bash
-# Download an hourly snapshot from R2 (dashboard → tabi bucket → tabi/db/history/), then on the droplet:
+# Download a snapshot (R2 or B2 dashboard → the bucket → tabi/db/history/), then on the droplet:
 cd /opt/tabi/deploy/droplet && docker compose stop
 gunzip -c 2026-11-20T10-00-00-000Z.sqlite.gz > data/tabi.db
 rm -f data/tabi.db-wal data/tabi.db-shm data/ha-state.json
@@ -310,6 +337,11 @@ These environment variables go in `.env` and control timing.
 | `HA_SNAPSHOT_MS` | 15000 | How often the leader uploads a snapshot when data changed |
 | `PHOTO_LIMIT_MB` | 2048 | Total space for Picture a day photos; uploads stop with a clear message at this size |
 | `CHAT_MEDIA_LIMIT_MB` | 3072 | Total space for photos and GIFs sent in chat |
+| `STORAGE_HOT_LIMIT_MB` | 8192 | With B2: the least-used files move to B2 when R2 passes 90% of this |
+| `COLD_AFTER_DAYS` | 30 | With B2: full-size photos and receipts nobody has opened for this long move to B2 |
+| `COLD_CHAT_AFTER_DAYS` | 14 | The same, for chat pictures |
+| `LOCAL_CACHE_MB` | 4096 | How much of each server's disk is used to keep copies of files |
+| `STORAGE_ALL_HOT` | off | `1` stops moving files to B2 and brings every file back into R2 (see below) |
 
 Worst-case takeover time is TTL + grace + backup extra, which is about 60 seconds.
 
@@ -325,9 +357,24 @@ Since 1.7 people can get Tabi's notifications on the lock screen while Tabi is c
 - **When:** only when none of that person's Tabi windows is on screen; otherwise the app shows it as usual. The same per-kind choices apply.
 - **Dead devices:** devices the push service reports as gone are removed automatically. The developer console shows how many devices have it on and when the last one was delivered.
 
+## Storage tiers: R2 and Backblaze B2
+
+Files (photos, chat pictures, receipts, profile photos, emojis, the Android app) are named by their contents' fingerprint (SHA-256), so a copy anywhere can be checked byte for byte.
+
+- **Every file** goes to R2 when it's saved, and is copied to B2 a moment later. If R2 is down, it goes to B2 straight away and back into R2 once R2 is up. If neither can take it, the upload fails with a message rather than living on one machine only.
+- **Reading** tries this server's disk, then R2, then B2. A copy that doesn't match its fingerprint is skipped, flagged and replaced from a good one. A store that keeps failing is skipped for a minute, so one outage doesn't slow everything down.
+- **Moving cold:** every 10 minutes the serving machine moves full-size photos, chat pictures and receipts nobody has opened for 30 days (14 for chat) out of R2, oldest first. It also moves the least-used ones when R2 passes 90% of `STORAGE_HOT_LIMIT_MB`. Before removing the R2 copy it checks that B2 has the file at the right size. Thumbnails, profile photos, emojis and the Android app always stay in R2, so lists and chat stay fast. A moved photo opens a little slower the first time, then goes back into R2 while there's room.
+- **Checks:** each run downloads three B2 copies and checks their fingerprints; a damaged or missing one is copied again.
+- **Each server's disk is a cache**, capped at `LOCAL_CACHE_MB`; the least-read files that have copies elsewhere are cleared first.
+- **Database snapshots:** R2 keeps the last 48 hours of hourly snapshots. Older ones are deleted, except one a day for 30 days and one a week for a year, which move to B2 (or stay in R2 without B2). B2 also gets a fresh snapshot at least once a day.
+
+The developer console's *File storage* panel shows how full R2 is, what's waiting to be copied, each store's health, the last run, and any files with problems.
+
+**To stop using B2, or before rolling back to 1.8:** set `STORAGE_ALL_HOT=1` on both machines and run `update.sh`. Within a few runs every file is back in R2 (*File storage* shows "Bringing files back to R2: done"). Then remove the `COLD_S3_*` lines, or roll back. Version 1.8 only reads R2, and without this step it can't load photos that had moved to B2. If you remove the `COLD_S3_*` settings first, the panel lists the files that are stranded in B2. Put the settings back with `STORAGE_ALL_HOT=1` to recover them.
+
 ## Picture a day: storage
 
-Photos are shrunk in the browser before upload: at most 2048 px, WebP or JPEG, usually 200 to 600 KB, plus a small thumbnail, with location and camera data removed. They're stored like receipts: on the serving machine's disk and in R2 under `blobs/`, so the backup has them too.
+Photos are shrunk in the browser before upload: at most 2048 px, WebP or JPEG, usually 200 to 600 KB, plus a small thumbnail, with location and camera data removed. They're stored like receipts: in R2 under `blobs/` (and in B2, if set up), with a copy on the serving machine's disk, so the backup has them too.
 
 Five a day for a two-week trip is roughly 50 MB, a small part of R2's free 10 GB. `PHOTO_LIMIT_MB` caps the total. See [FEASIBILITY.md](FEASIBILITY.md) for the estimates, and for chat and games.
 

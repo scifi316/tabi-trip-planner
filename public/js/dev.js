@@ -113,6 +113,26 @@ function serversHtml(h, version) {
     ${behind.length ? `<p class="hint" style="color:var(--bad,#c00)">Not every server runs ${esc(version)}. Run <span class="mono">bash /opt/tabi/deploy/update.sh</span> on ${behind.map(([n]) => esc(n)).join(', ')} too, or people can get the older app whenever it takes over.</p>` : ''}`;
 }
 
+// Where uploaded files live: R2 (hot), the cold store, and this server's disk cache
+function storageHtml(st) {
+  if (!st || !st.hot) return '<p class="hint">Files are kept on this server only. Set the S3_* settings to keep copies in R2.</p>';
+  const files = (x) => `${x.files} file${x.files === 1 ? '' : 's'}, ${bytes(x.bytes)}`;
+  const pct = st.hot.limit ? Math.round((st.hot.bytes / st.hot.limit) * 100) : 0;
+  const run = st.lastRun;
+  const did = run ? Object.entries(run).filter(([k, n]) => !['at', 'error'].includes(k) && n).map(([k, n]) => `${esc({ indexed: 'added to the index', copiedCold: 'copied to cold', copiedHot: 'copied back to R2', movedCold: 'moved cold', checked: 'spot-checked', damaged: 'damaged', missing: 'missing', evicted: 'cleared from disk' }[k] || k)} ${n}`).join(', ') : '';
+  return `${kv([
+    ['R2 (hot)', `${files(st.hot)} <span class="hint">of ${bytes(st.hot.limit)} (${pct}%)</span>${pct >= 90 ? ' <span class="badge warn">nearly full: moving old files cold</span>' : ''}`],
+    ['Cold store', st.cold ? `${esc(st.tiers?.[1] || 'cold')}: ${files(st.cold)}${st.coldOnly?.files ? ` <span class="hint">(${st.coldOnly.files} only there)</span>` : ''}` : '<span class="badge">off</span> <span class="hint">Set COLD_S3_* to add Backblaze B2</span>'],
+    ...(st.allHot ? [['Bringing files back to R2', st.coldOnly?.files ? `<span class="badge warn">${st.coldOnly.files} left</span>` : '<span class="badge good">done</span>']] : []),
+    ...(st.stranded?.files ? [['Only in the cold store', `<span class="badge bad">${st.stranded.files} files</span> <span class="hint">The cold store isn’t set up any more, so these can’t load. Put the COLD_S3_* settings back with STORAGE_ALL_HOT=1.</span>`]] : []),
+    ['Waiting to copy cold', st.cold ? (st.waitingForCold ? `<span class="badge warn">${st.waitingForCold}</span>` : 'none') : '–'],
+    ['This server’s disk cache', `${st.local.bytes == null ? '–' : bytes(st.local.bytes)} <span class="hint">of ${bytes(st.local.limit)}</span>`],
+    ['Stores', st.stores.map((x) => `${esc(x.name)} ${x.ok ? '<span class="badge good">ok</span>' : `<span class="badge ${x.skippedUntil > Date.now() ? 'bad' : 'warn'}">${x.failures} failure${x.failures === 1 ? '' : 's'}</span> <span class="hint">${esc(x.lastError || '')}</span>`}`).join('<br>')],
+    ['Last upkeep', run ? `${ago(run.at)}${did ? `: ${did}` : ', nothing to do'}${run.error ? ` <span class="badge bad">${esc(run.error)}</span>` : ''}` : 'not yet (runs a minute after start, then every 10 minutes)'],
+  ])}${st.problems?.length ? `<h4 style="margin:12px 0 6px;font-size:13px">Files with problems</h4><div class="tbl-wrap"><table><thead><tr><th>File</th><th>Kind</th><th>Problem</th></tr></thead><tbody>
+    ${st.problems.map((p) => `<tr><td class="mono">${esc(p.key.slice(0, 12))}…</td><td>${esc(p.kind || '–')}</td><td>${esc(p.problem)}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+}
+
 // ---------- views ----------
 function viewOverview(v) {
   const o = overview;
@@ -142,6 +162,7 @@ function viewOverview(v) {
         ['Failover', yes(o.features.ha)], ['Behind proxy', yes(o.features.trustProxy)], ['Session length', `${o.features.sessionDays} days`],
         ['Trip', `${esc(o.trip.name)}, ${esc(o.trip.start || '?')} to ${esc(o.trip.end || '?')}`], ['Time zone', esc(o.trip.timezone)], ['Currency', esc(o.trip.currency)],
         ['Veto rule', esc(o.trip.vetoRule)], ['Auto-confirm', o.trip.autoConfirm || 'off']])}</section>
+      <section class="panel wide"><h3>File storage</h3>${storageHtml(o.storage)}</section>
       <section class="panel wide"><h3>Map</h3>${kv([
         ['Light style', `<span class="mono">${esc(o.config.styleLight)}</span>`], ['Dark style', `<span class="mono">${esc(o.config.styleDark)}</span>`],
         ['Offline download limit', `${o.config.offlineTileLimit} tiles per press`], ['Map files cached in this browser', '<span id="tilecache">…</span>']])}

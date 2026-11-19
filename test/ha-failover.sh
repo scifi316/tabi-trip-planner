@@ -21,7 +21,17 @@ role() { curl -s "localhost:$1/healthz" | grep -o '"role":"[a-z]*"' | cut -d'"' 
 wait_for() { for i in $(seq 1 30); do [ "$(role "$1")" = leader ] && { echo "  $2 after ${i}s"; return 0; }; sleep 1; done; echo "  FAILED: $2"; exit 1; }
 run primary 8101 primary; P=$LAST; sleep 1.5; run home 8102 backup; sleep 2
 curl -s -c "$T/c" -H 'Content-Type: application/json' -d '{"tripName":"HA","name":"Test","password":"secret1"}' localhost:8101/api/setup >/dev/null
-sleep 2
+SIGNED_IN=$(date +%s%3N)
+# A hard crash loses whatever isn't in a snapshot yet: wait for one taken after the sign-in (not a fixed sleep,
+# which a busy machine can overrun)
+for i in $(seq 1 40); do
+  LS=$(curl -s localhost:8101/healthz | grep -o '"lastSnapshot":[0-9]*' | cut -d: -f2)
+  [ -n "$LS" ] && [ "$LS" -gt "$SIGNED_IN" ] && break; sleep 0.25
+done
+[ -n "$LS" ] && [ "$LS" -gt "$SIGNED_IN" ] || { echo "  FAILED: no snapshot after signing in"; exit 1; }
+# That one may have copied the database a moment before the sign-in landed; if so the leader takes another
+FIRST=$LS
+for i in $(seq 1 10); do sleep 0.25; LS=$(curl -s localhost:8101/healthz | grep -o '"lastSnapshot":[0-9]*' | cut -d: -f2); [ "$LS" != "$FIRST" ] && break; done
 echo "kill -9 primary"; kill -9 "$P"; wait "$P" 2>/dev/null; wait_for 8102 "backup took over"
 if curl -s -b "$T/c" localhost:8102/api/status | grep -q '"signedIn":true'; then echo "  session survived failover"; else echo "  FAILED: session lost"; exit 1; fi
 echo "restart primary"; run primary 8101 primary; wait_for 8101 "primary took back over"

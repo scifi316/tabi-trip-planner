@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const DEV = path.dirname(fileURLToPath(import.meta.url));
-const DATA = path.join(DEV, '.data');
+// The stack's data folder: the same --data / TABI_DEV_DATA as dev/stack.mjs
+const dataArg = process.argv.indexOf('--data');
+const DATA = path.resolve(dataArg > 0 ? process.argv[dataArg + 1] : process.env.TABI_DEV_DATA || path.join(DEV, '.data'));
 const DOCKER = process.argv.includes('--docker');
 let stack;
 if (DOCKER) {
