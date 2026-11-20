@@ -124,3 +124,21 @@ export function photoZoom(stage, { onSwipe } = {}) {
 
   return { get view() { return { ...t }; }, reset: () => set({ z: 1, x: 0, y: 0 }), refit };
 }
+
+// In a list of pictures (the group chat), the page itself can't be pinched any more, so pinching a picture
+// opens it in the full-screen viewer, where it can be zoomed. open(el) gets the picture that was pinched.
+export function openOnPinch(box, selector, open) {
+  const down = new Map(); // pointerId -> the picture that finger is on
+  box.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch') return;
+    const pic = e.target.closest?.(selector) || null;
+    down.set(e.pointerId, pic);
+    if (down.size === 2 && pic) {
+      const [a, b] = [...down.values()];
+      if (a === b) { down.clear(); open(pic); }
+    }
+  });
+  const up = (e) => { down.delete(e.pointerId); };
+  box.addEventListener('pointerup', up);
+  box.addEventListener('pointercancel', up);
+}

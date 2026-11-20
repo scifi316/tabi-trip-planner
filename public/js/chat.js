@@ -8,7 +8,7 @@ import { reactionSet } from './reactions.js';
 import { meButton, currentTab } from './main.js';
 import { wideScreen, markRead as markNotifsRead } from './notifications.js';
 import { decodeImage, shrinkImage } from './photos.js';
-import { photoZoom } from './photozoom.js';
+import { photoZoom, openOnPinch } from './photozoom.js';
 
 const PAGE = 40;
 const GROUP_GAP = 5 * 60e3;   // messages closer than this from the same person share one name/avatar
@@ -98,7 +98,7 @@ function mediaHtml(m) {
   const w = md.w || 240, h = md.h || 180;
   const ar = `aspect-ratio:${w}/${h}`;
   if (m.kind === 'gif') {
-    return `<button class="msg-media gif" data-gif style="${ar};--w:${Math.min(260, w)}px" aria-label="GIF${md.title ? `: ${esc(md.title)}` : ''}">
+    return `<button class="msg-media gif" data-gif style="${ar};--w:${Math.min(260, w)}px" aria-label="Open GIF${md.title ? `: ${esc(md.title)}` : ''}">
       <img src="${esc(md.url)}" alt="${esc(md.title || 'GIF')}" loading="lazy" decoding="async" referrerpolicy="no-referrer"></button>`;
   }
   return `<button class="msg-media" data-photo style="${ar};--w:${Math.min(260, Math.round(260 * Math.min(1, w / h * 1.1)))}px" aria-label="Open photo">
@@ -247,6 +247,8 @@ function build() {
   msgs.addEventListener('click', onMsgClick);
   msgs.addEventListener('contextmenu', (e) => { const m = e.target.closest('.msg'); if (!m || e.target.closest('a, input')) return; e.preventDefault(); openActions(m); });
   bindLongPress(msgs);
+  // The page doesn't pinch-zoom (TA-15), so pinching a picture or GIF opens it full screen to zoom there
+  openOnPinch(msgs, '.msg-media', (pic) => { const el = pic.closest('.msg'); const m = el && msgById(el); if (m) openPhoto(m); });
   r.querySelector('[data-jump-latest]').onclick = () => toBottom(true);
 }
 
@@ -444,7 +446,7 @@ function onMsgClick(e) {
   const rx = e.target.closest('[data-rx]');
   if (rx) return react(m, rx.dataset.rx, !(m.reactions?.[rx.dataset.rx] || []).includes(meId()));
   if (e.target.closest('[data-act]')) return openActions(el);
-  if (e.target.closest('[data-photo]')) return openPhoto(m);
+  if (e.target.closest('[data-photo], [data-gif]')) return openPhoto(m);
   if (e.target.closest('[data-retry]')) { delete m.failed; op('chat.send', { chat: m.chat, clientId: m.clientId, text: m.text, replyTo: m.replyTo, ...(m.kind === 'gif' ? { gif: { ...m.media, title: m.text } } : {}) }); return renderMsgs(); }
   const j = e.target.closest('[data-jump]');
   if (j) return jumpTo(+j.dataset.jump);
@@ -459,8 +461,12 @@ function jumpTo(id) {
 let pressedAt = 0;
 function bindLongPress(box) {
   let t = 0, x0 = 0, y0 = 0;
+  const fingers = new Set();
   box.addEventListener('pointerdown', (e) => {
-    if (e.pointerType !== 'touch' || e.target.closest('a, button.rx, [data-retry]')) return;
+    if (e.pointerType !== 'touch') return;
+    fingers.add(e.pointerId);
+    if (fingers.size > 1) return clearTimeout(t); // a pinch, not a press and hold
+    if (e.target.closest('a, button.rx, [data-retry]')) return;
     const m = e.target.closest('.msg');
     if (!m) return;
     x0 = e.clientX; y0 = e.clientY;
@@ -468,6 +474,7 @@ function bindLongPress(box) {
   });
   const cancel = (e) => { if (e.type !== 'pointermove' || Math.hypot(e.clientX - x0, e.clientY - y0) > 10) clearTimeout(t); };
   for (const ev of ['pointermove', 'pointerup', 'pointercancel']) box.addEventListener(ev, cancel, { passive: true });
+  for (const ev of ['pointerup', 'pointercancel']) box.addEventListener(ev, (e) => fingers.delete(e.pointerId), { passive: true });
 }
 
 function openActions(el) {
@@ -487,7 +494,7 @@ function openActions(el) {
       <div class="act-list">
         <button class="btn block" data-reply>${icon('reply')}Reply</button>
         ${m.text && m.kind === 'text' ? `<button class="btn block" data-copy>${icon('copy')}Copy text</button>` : ''}
-        ${m.kind === 'photo' ? `<button class="btn block" data-open>${icon('external')}Open photo</button>` : ''}
+        ${m.kind === 'photo' || m.kind === 'gif' ? `<button class="btn block" data-open>${icon('external')}Open ${m.kind === 'gif' ? 'GIF' : 'photo'}</button>` : ''}
         ${mine || state.me?.isAdmin ? `<button class="btn block danger" data-del>${icon('trash')}Delete${mine ? '' : ' (admin)'}</button>` : ''}
       </div>`,
   });
@@ -520,21 +527,26 @@ async function react(m, emoji, onOff) {
   if (r.ok === false) toast(r.error || 'Couldn’t react. Check your connection.');
 }
 
-// ---------- photos ----------
+// ---------- photos and GIFs, full screen ----------
+// Pinch, double-tap or drag to zoom (photozoom.js). A KLIPY GIF has no download button: its terms don't
+// allow keeping copies, so it's only ever shown straight from KLIPY.
 function openPhoto(m) {
   const md = m.media;
-  if (!md) return;
+  if (!md || document.querySelector('.chat-viewer')) return; // already open (a pinch can also end in a tap)
+  const klipy = m.kind === 'gif';
+  const what = klipy || md.gif ? 'GIF' : 'Photo';
   const el = document.createElement('div');
   el.className = 'photo-viewer chat-viewer';
-  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', 'Photo');
+  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', what);
   el.tabIndex = -1;
   const u = userById(m.by);
+  const caption = klipy ? (md.title || m.text) : m.text;
   el.innerHTML = `
     <div class="pv-top"><button class="icon-btn pv-close" data-close aria-label="Close">${icon('x')}</button><span class="grow"></span>
-      <a class="icon-btn" href="${esc(md.url)}" download="tabi-chat-${m.id}.${md.url.split('.').pop()}" aria-label="Download" data-tip="Download">${icon('download')}</a></div>
-    <div class="pv-stage"><img src="${esc(md.thumb || md.url)}" alt="" class="pv-low"><img src="${esc(md.url)}" alt="${esc(m.text || 'Photo')}" class="pv-img"></div>
+      ${klipy ? '<span class="pv-count">GIF via KLIPY</span>' : `<a class="icon-btn" href="${esc(md.url)}" download="tabi-chat-${m.id}.${md.url.split('.').pop()}" aria-label="Download" data-tip="Download">${icon('download')}</a>`}</div>
+    <div class="pv-stage">${klipy || md.gif ? '' : `<img src="${esc(md.thumb || md.url)}" alt="" class="pv-low">`}<img src="${esc(md.url)}" alt="${esc(caption || what)}" class="pv-img"${klipy ? ' referrerpolicy="no-referrer"' : ''}></div>
     <div class="pv-foot"><div class="pv-who">${u ? avatar(u) : ''}<div class="grow"><b>${esc(nameOf(m.by))}</b> <span class="faint">${esc(dayLabel(m.at))}, ${time(m.at)}</span>
-      ${m.text ? `<div class="pv-caption-text">${withEmojis(m.text)}</div>` : ''}</div></div></div>`;
+      ${caption ? `<div class="pv-caption-text">${klipy ? esc(caption) : withEmojis(caption)}</div>` : ''}</div></div></div>`;
   document.body.appendChild(el);
   const close = () => { el.remove(); removeEventListener('keydown', key); };
   const key = (e) => { if (e.key === 'Escape') close(); };
