@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TAB_KINDS, affectsTab, patchHtml, patchList, rowItems, keepScroll, createThrottle, optionsHtml } from '../public/js/devview.js';
+import { TAB_KINDS, affectsTab, patchHtml, patchList, rowItems, keepScroll, createThrottle, optionsHtml, keepPageStill, holdHeight, releaseHeight, seenAgo } from '../public/js/devview.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
@@ -163,4 +163,80 @@ test('the console page scrolls as a page, and live data never rebuilds a whole t
   assert.ok(!/\.focus\(\)/.test(js), 'no refocusing after a redraw: the filter box keeps its focus because it is never replaced');
   assert.match(js, /if \(mounted !== tab\)/, 'a tab is only built when you open it');
   assert.ok(!/setInterval\(\(\) => refreshOverview\(\)\.then\(\(\) => tab === 'overview' && render\(\)\)/.test(js), 'the overview timer no longer rebuilds the page');
+});
+
+// 1.8.9: the Accounts panel no longer jumps when the Failover panel above it changes height.
+// A page of blocks stacked top to bottom, scrolled to `scrollY`, in a 600px-tall window.
+const page = (heights, scrollY, innerHeight = 600) => {
+  const win = { scrollY, innerHeight, scrollBy(_x, y) { this.scrollY += y; } };
+  const blocks = heights.map((h) => ({ h }));
+  const top = (i) => blocks.slice(0, i).reduce((a, b) => a + b.h, 0) - win.scrollY;
+  blocks.forEach((b, i) => { b.getBoundingClientRect = () => ({ top: top(i), bottom: top(i) + b.h }); });
+  return { win, blocks };
+};
+
+test('keepPageStill: the block you are reading stays put when one above it grows or shrinks', () => {
+  // Server 300, Failover 300, Map 200, Accounts 400; scrolled so Accounts starts 50px down the screen.
+  const { win, blocks } = page([300, 300, 200, 400], 750);
+  assert.equal(blocks[3].getBoundingClientRect().top, 50);
+  keepPageStill(win, blocks, () => { blocks[1].h += 60; }); // a "behind" warning appears in Failover
+  assert.equal(blocks[3].getBoundingClientRect().top, 50, 'Accounts did not move');
+  keepPageStill(win, blocks, () => { blocks[1].h -= 60; });
+  assert.equal(blocks[3].getBoundingClientRect().top, 50);
+});
+
+test('keepPageStill: at the top of the page nothing scrolls, and a correction the browser made is not doubled', () => {
+  const { win, blocks } = page([300, 300, 400], 0);
+  keepPageStill(win, blocks, () => { blocks[1].h += 80; });
+  assert.equal(win.scrollY, 0, 'the first block is the anchor, and it did not move');
+  const b = page([300, 300, 200, 400], 750);
+  // The browser's own scroll anchoring already moved the page by the same amount.
+  keepPageStill(b.win, b.blocks, () => { b.blocks[1].h += 60; b.win.scrollY += 60; });
+  assert.equal(b.blocks[3].getBoundingClientRect().top, 50);
+  assert.equal(b.win.scrollY, 810);
+});
+
+test('keepPageStill: inside one block taller than the screen, that block is the anchor', () => {
+  const { win, blocks } = page([300, 2000, 400], 800); // reading the middle of the tall block
+  keepPageStill(win, blocks, () => { blocks[0].h += 40; });
+  assert.equal(blocks[1].getBoundingClientRect().top, -500);
+  assert.equal(keepPageStill(null, blocks, () => 'ran'), 'ran');
+});
+
+test('holdHeight: a panel may grow but does not shrink back until released', () => {
+  const el = { offsetHeight: 120, style: {} };
+  holdHeight(el);
+  assert.equal(el.style.minHeight, '120px');
+  el.offsetHeight = 180; holdHeight(el);
+  assert.equal(el.style.minHeight, '180px');
+  el.offsetHeight = 140; holdHeight(el); // the error badge went away: keep the room
+  assert.equal(el.style.minHeight, '180px');
+  releaseHeight(el);
+  assert.equal(el.style.minHeight, '');
+  holdHeight(el);
+  assert.equal(el.style.minHeight, '140px');
+  holdHeight(null); releaseHeight(null);
+});
+
+test('seenAgo changes at most once a minute, so an Accounts row only redraws when it has news', () => {
+  const now = Date.UTC(2026, 10, 20, 12, 0, 0);
+  assert.equal(seenAgo(0, now), '–');
+  assert.equal(seenAgo(now - 20e3, now), 'just now');
+  assert.equal(seenAgo(now - 50e3, now), 'just now');
+  assert.equal(seenAgo(now - 5 * 60e3 - 10e3, now), '5 min ago');
+  assert.equal(seenAgo(now - 5 * 60e3 - 50e3, now), '5 min ago');
+  assert.equal(seenAgo(now - 3 * 3600e3, now), '3 h ago');
+  assert.equal(seenAgo(now - 49 * 3600e3, now), '2 d ago');
+});
+
+test('Accounts is built once and refreshed row by row', () => {
+  const js = read('public/js/dev.js');
+  assert.ok(!/renderAccountsPanel/.test(js), 'no function rebuilds the whole Accounts panel any more');
+  const upd = js.slice(js.indexOf('function updateAccounts'), js.indexOf('// The console’s only write action') > 0 ? js.indexOf('// The console’s only write action') : js.indexOf("// The console's only write action"));
+  assert.match(upd, /patchRows\(\$\('#acct-body'\)/, 'rows are patched in place');
+  assert.match(upd, /key: \(p\) => p\.id/, 'each row is keyed by the person');
+  assert.ok(!/\.innerHTML\s*=/.test(upd), 'the panel is never rebuilt on refresh');
+  assert.match(js, /id="ov-failover" data-hold/, 'the Failover panel keeps its height');
+  assert.match(js, /keepPageStill\(window, blocks/, 'every redraw keeps what you are reading in place');
+  assert.match(js, /tab === 'overview' \? refreshPeople\(\)/, 'the 10-second timer refreshes Accounts too');
 });

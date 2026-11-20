@@ -2,6 +2,15 @@
   "about": "What's new in Tabi, newest first. Every release that changes package.json's version adds an entry here in the same pull request (test/changelog.test.mjs checks). Write changes for the people using the app, one short sentence each.",
   "releases": [
     {
+      "version": "1.8.9",
+      "date": "2026-11-20",
+      "tickets": ["TA-7"],
+      "changes": [
+        "Developer console: the Accounts section on the Overview no longer jumps or flickers when the Failover panel above it refreshes.",
+        "Developer console: Accounts now keeps itself up to date, changing only the rows of people whose details changed."
+      ]
+    },
+    {
       "version": "1.8.8",
       "date": "2026-11-20",
       "prs": [26],
