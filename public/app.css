@@ -64,6 +64,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* iOS enlarges text in landscape unless a page opts out, and in a home-screen app it doesn't always shrink it
+   back after turning to portrait (TA-13). 100%, not none, so Safari's own text-size setting still works. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Nothing may make the whole page wider than the screen: on iOS that shifts the fixed layout and where taps land */
+html, body { overflow-x: clip; }
 body {
   font-family: var(--font);
   font-size: 15px;
