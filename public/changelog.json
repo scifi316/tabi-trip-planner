@@ -11,6 +11,16 @@
       ]
     },
     {
+      "version": "1.8.7",
+      "date": "2026-11-20",
+      "tickets": ["TA-18"],
+      "changes": [
+        "The All days button in the itinerary no longer gets cut off at the edge of the screen.",
+        "Pull a place card down by its title as well as the little bar at the top.",
+        "After pulling a card part way down and letting go, its close button works on the first tap."
+      ]
+    },
+    {
       "version": "1.8.6",
       "date": "2026-11-20",
       "tickets": ["TA-7"],
