@@ -2,6 +2,14 @@
   "about": "What's new in Tabi, newest first. Every release that changes package.json's version adds an entry here in the same pull request (test/changelog.test.mjs checks). Write changes for the people using the app, one short sentence each.",
   "releases": [
     {
+      "version": "1.8.6",
+      "date": "2026-11-20",
+      "tickets": ["TA-7"],
+      "changes": [
+        "The developer console stays steady while live updates arrive: no more flicker, jumping, or text you've typed being cleared."
+      ]
+    },
+    {
       "version": "1.8.5",
       "date": "2026-11-20",
       "tickets": ["TA-17"],
