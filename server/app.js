@@ -479,6 +479,19 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     throw last;
   }
 
+  // Every file the trip still uses, for the storage upkeep (same tables as dropBlobIfUnused)
+  function blobRefs() {
+    const out = [];
+    const add = (key, kind, at) => { if (key) out.push({ key, kind, at }); };
+    for (const r of db.prepare('SELECT avatar, created_at FROM users WHERE avatar IS NOT NULL').all()) add(r.avatar, 'avatar', r.created_at);
+    for (const r of db.prepare('SELECT blob_key, created_at FROM attachments').all()) add(r.blob_key, 'receipt', r.created_at);
+    for (const r of db.prepare('SELECT file, created_at FROM custom_emojis WHERE deleted_at IS NULL').all()) add(r.file, 'emoji', r.created_at);
+    for (const r of db.prepare('SELECT file, thumb, created_at FROM daily_photos WHERE deleted_at IS NULL').all()) { add(r.file, 'photo', r.created_at); add(r.thumb, 'thumb', r.created_at); }
+    for (const r of db.prepare('SELECT file, thumb, created_at FROM chat_messages WHERE file IS NOT NULL AND deleted_at IS NULL').all()) { add(r.file, 'chat', r.created_at); add(r.thumb, 'thumb', r.created_at); }
+    const a = androidApp(); if (a?.key) add(a.key, 'apk', a.at);
+    return out;
+  }
+
   const AVATAR_MAX_BYTES = 512 * 1024;
   // Old profile photos are deleted so they don't take up storage.
   function dropBlobIfUnused(key) {
@@ -933,7 +946,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           if (!size || size.type !== ext) return send(res, 400, { error: 'That image could not be read.' });
           if (size.width !== size.height) return send(res, 400, { error: 'Profile photos have to be square.' });
           if (size.width > 640 || size.width < 64) return send(res, 400, { error: 'Profile photos must be between 64 and 640 pixels wide.' });
-          key = await blobs.put(buf, ext);
+          key = await blobs.put(buf, ext, 'avatar');
         }
         db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(key, user.id);
         broadcast({ t: 'users', users: listUsers() });
@@ -964,7 +977,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         const size = imageSize(buf);
         if (!size || size.type !== ext) return send(res, 400, { error: 'That image could not be read.' });
         if (size.width !== size.height || size.width > EMOJI_PX || size.width < 16) return send(res, 400, { error: `Emojis must be square, ${EMOJI_PX}×${EMOJI_PX} pixels at most.` });
-        const file = await blobs.put(buf, ext);
+        const file = await blobs.put(buf, ext, 'emoji');
         db.prepare('INSERT INTO custom_emojis(name, file, created_by, created_at) VALUES(?, ?, ?, ?)').run(name, file, user.id, now());
         broadcast({ t: 'emojis', list: customEmojis() });
         logActivity(user.id, `${user.name} added the emoji :${name}:`);
@@ -1008,7 +1021,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (Math.max(ts.width, ts.height) > 640 || thumbBuf.length > 300 * 1024) return send(res, 400, { error: 'The preview is too big.' });
         const limit = (+env.CHAT_MEDIA_LIMIT_MB || 3072) * 1048576;
         if (chat.mediaBytes() + buf.length > limit) return send(res, 507, { error: 'The chat’s space for pictures is full. An admin can delete old pictures, or raise CHAT_MEDIA_LIMIT_MB on the server.' });
-        const file = await blobs.put(fullBuf, fsz.type), thumb = await blobs.put(thumbBuf, ts.type);
+        const file = await blobs.put(fullBuf, fsz.type, 'chat'), thumb = await blobs.put(thumbBuf, ts.type, 'thumb');
         try {
           const m = chat.post(user, { chat: meta.chat, clientId: meta.clientId, kind: 'photo', text: meta.text, replyTo: meta.replyTo, file, thumb,
             width: fsz.width, height: fsz.height, bytes: fullBuf.length + thumbBuf.length, mime: { gif: 'image/gif', webp: 'image/webp', jpg: 'image/jpeg', png: 'image/png' }[fsz.type] });
@@ -1030,7 +1043,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (prev && info.versionCode < prev.versionCode) warnings.push(`It’s older than the one it replaces (${prev.versionName}). Phones that already have the newer one won’t take it.`);
         if (prev && info.versionCode === prev.versionCode && prev.cert === info.cert && prev.commit !== info.commit) warnings.push('It has the same version number as the last one, so phones won’t see it as an update. Raise versionCode in android/version.properties.');
         if (prev && prev.cert !== info.cert) warnings.push('It’s signed with a different key than the last one. Phones must uninstall the old app before installing this one.');
-        const key = await blobs.put(buf, 'apk');
+        const key = await blobs.put(buf, 'apk', 'apk');
         const app = { ...info, key, size: buf.length, at: now(), by: user.id };
         setSetting('androidApp', app);
         if (prev?.key && prev.key !== key) dropBlobIfUnused(prev.key);
@@ -1110,7 +1123,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (Math.max(fs2.width, fs2.height) > 2560 || Math.max(ts.width, ts.height) > 640 || thumbBuf.length > 300 * 1024) return send(res, 400, { error: 'The photo wasn’t shrunk properly. Reload Tabi and try again.' });
         if (photoBytes() + buf.length > PHOTO_LIMIT) return send(res, 507, { error: `The trip’s photo space is full (${PHOTO_LIMIT >= 1073741824 ? `${+(PHOTO_LIMIT / 1073741824).toFixed(1)} GB` : `${+(PHOTO_LIMIT / 1048576).toFixed(1)} MB`}). An admin can remove some photos, or raise PHOTO_LIMIT_MB on the server.` });
         const caption = str(meta.caption, 140);
-        const [file, thumb] = [await blobs.put(fullBuf, fs2.type), await blobs.put(thumbBuf, ts.type)];
+        const [file, thumb] = [await blobs.put(fullBuf, fs2.type, 'photo'), await blobs.put(thumbBuf, ts.type, 'thumb')];
         // Checked again right before saving: two people adding the 5th photo at once
         const n = db.prepare('SELECT COUNT(*) n FROM daily_photos WHERE day = ? AND deleted_at IS NULL').get(day).n;
         if (n >= PHOTOS_PER_DAY) { dropBlobIfUnused(file); dropBlobIfUnused(thumb); return send(res, 409, { error: `This day already has ${PHOTOS_PER_DAY} photos. Remove one to add another.` }); }
@@ -1153,7 +1166,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (!ext) return send(res, 415, { error: 'Upload a JPEG, PNG or WebP image.' });
         const buf = await readRaw(req, 8e6);
         if (!buf.length) return send(res, 400, { error: 'The image was empty.' });
-        const key = await blobs.put(buf, ext);
+        const key = await blobs.put(buf, ext, 'receipt');
         const id = 'a' + crypto.randomBytes(9).toString('base64url');
         db.prepare('INSERT INTO attachments(id, expense_id, blob_key, mime, bytes, width, height, created_by, created_at) VALUES(?, NULL, ?, ?, ?, ?, ?, ?, ?)')
           .run(id, key, mime, buf.length, +url.searchParams.get('w') || null, +url.searchParams.get('h') || null, user.id, now());
@@ -1325,6 +1338,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     devPush('op', { user: '-', op: 'photo.reminder', ok: true, day: today });
     return true;
   }
+  // Storage upkeep: copies to the cold store, moving old files out of R2, spot checks. Only the leader runs the app, so only one node does this.
+  const STORAGE_EVERY = +env.STORAGE_UPKEEP_MS || 10 * 60e3;
+  const runUpkeep = () => blobs.maintain?.(blobRefs).catch((e) => console.error('[storage]', e));
+  const upkeepFirst = setTimeout(runUpkeep, +env.STORAGE_UPKEEP_FIRST_MS || 60e3);
+  const upkeepTimer = setInterval(runUpkeep, STORAGE_EVERY);
   const reminderTimer = setInterval(() => { try { photoReminder(); } catch (e) { console.error(e); } }, +env.PHOTO_REMINDER_EVERY_MS || 5 * 60e3);
   purge.unref();
 
@@ -2073,6 +2091,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
           push: pusher.stats(),
           chat: { ...chat.stats(), mediaBytes: chat.mediaBytes() },
         },
+        storage: blobs.stats?.() || null,
         clients: [...clients].map((c) => ({ user: c.user.name, since: c.since, ip: c.ip, ua: c.ua, build: c.build || null, current: !c.build || c.build === BUILD })),
         build: BUILD,
         trip: { ...tripForClient(null), joinCode: undefined },
@@ -2108,7 +2127,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   return {
     server,
     userCount,
-    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); clearInterval(reminderTimer); return new Promise((r) => server.close(r)); },
+    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); clearInterval(reminderTimer); clearTimeout(upkeepFirst); clearInterval(upkeepTimer); blobs.flushReads?.(); return new Promise((r) => server.close(r)); },
     photoReminder, // for tests
   };
 }

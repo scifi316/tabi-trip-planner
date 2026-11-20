@@ -160,6 +160,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] **High availability**: a cloud primary (DigitalOcean Singapore, or Fly.io Tokyo) and your home server as backup.
   - A lease in Cloudflare R2 decides which one serves.
   - The database is snapshotted continuously, and receipts are stored in R2.
+  - Optional second storage tier on Backblaze B2: a copy of every file, old full-size photos move there when R2 fills up or nobody opens them, and long-term database snapshots are kept there. Copies are checked by fingerprint, and reads fail over between the two.
   - Failover and hand-back are automatic, and only the serving machine runs the Cloudflare Tunnel.
 - [x] Docker image (amd64 and arm64) with cloudflared included.
 - [x] One-command server setup (`deploy/setup.sh`): swap, Docker, firewall, deploy key, secrets and start-up. Updating is one command too (`deploy/update.sh`).
@@ -200,7 +201,7 @@ server/index.js    Boot: single host or HA (lease, restore, tunnel)
 server/app.js      HTTP API, private-link gate, WebSocket hub, all operations
 server/auth.js     Cookie sessions with an in-memory cache, gate token
 server/ha.js       Leader lease, snapshots, failover and hand-back
-server/s3.js       Minimal S3/R2 client;  server/blobs.js  receipt and profile photo storage
+server/s3.js       Minimal S3/R2/B2 client;  server/blobs.js  file storage across disk, R2 and B2
 server/notify.js   Notifications: who's told what, merging repeats, per-person switches
 server/push.js     Web Push: encryption (RFC 8291) and signing (RFC 8292) with Node’s own crypto, no extra dependencies
 server/images.js   Reads image sizes from file headers (profile photo checks)
