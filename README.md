@@ -133,7 +133,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 - [x] Export the trip as KML or JSON.
 
 ### Developer console
-- [x] `/dev`, behind its own `DEV_KEY`. It updates live. Its only actions are clearing expenses and making password reset links.
+- [x] `/dev`, behind its own `DEV_KEY`. It updates live. Its only actions are clearing expenses and, when turned on with `DEV_RESET_LINKS`, making password reset links.
   - **Overview:** server health and failover state, data counts, settings, and who has the app open. It can also clear all expenses (type CLEAR) and undo the last clear.
   - **Accounts:** everyone, current and former. It shows whether each person's recovery code is saved, made but not saved yet, or missing, their devices and when they were last seen, and can make a one-time password reset link. Useful if the only admin is the one locked out.
   - **Locations:** a map with trails, plus every location update with its source, accuracy, battery and delay.

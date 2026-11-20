@@ -32,6 +32,29 @@ export function devSubscribe(req, res) {
   req.on('close', () => { clearInterval(ping); subscribers.delete(res); });
 }
 
+// Keys and tokens from the server's settings never reach the console: some services take their key
+// in the address (KLIPY puts it in the path), and an error message can quote a setting. Any setting
+// whose name says it's a key, token, secret or password is blanked out, as typed and URL-encoded.
+const SECRET_NAME = /(KEY|TOKEN|SECRET|PASSWORD)/i;
+let secretValues = null;
+function secrets() {
+  if (!secretValues) {
+    const vals = new Set();
+    for (const [k, v] of Object.entries(process.env)) {
+      if (!SECRET_NAME.test(k) || !v || v.length < 8) continue; // short values are placeholders, and would blank ordinary text
+      vals.add(v);
+      vals.add(encodeURIComponent(v));
+    }
+    secretValues = [...vals].sort((a, b) => b.length - a.length);
+  }
+  return secretValues;
+}
+export function redact(s) {
+  let out = String(s);
+  for (const v of secrets()) if (out.includes(v)) out = out.split(v).join('…');
+  return out;
+}
+
 // Capture console output and outbound HTTP calls (search, link lookups, R2, exchange rates…).
 let installed = false;
 export function installDevCapture() {
@@ -42,7 +65,7 @@ export function installDevCapture() {
     console[level] = (...args) => {
       orig(...args);
       const msg = args.map((a) => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
-      devPush('log', { level, msg: msg.slice(0, 2000) });
+      devPush('log', { level, msg: redact(msg).slice(0, 2000) });
     };
   }
   const origFetch = globalThis.fetch;
@@ -52,13 +75,13 @@ export function installDevCapture() {
     const t0 = Date.now();
     let u;
     try { u = new URL(url); } catch { u = null; }
-    const where = u ? { host: u.host, path: (u.pathname + u.search).slice(0, 240) } : { host: '?', path: url.slice(0, 240) };
+    const where = u ? { host: u.host, path: redact(u.pathname + u.search).slice(0, 240) } : { host: '?', path: redact(url).slice(0, 240) };
     try {
       const r = await origFetch(input, init);
       devPush('net', { method, ...where, status: r.status, ms: Date.now() - t0 });
       return r;
     } catch (e) {
-      devPush('net', { method, ...where, status: 0, error: e.name === 'TimeoutError' ? 'timeout' : e.message, ms: Date.now() - t0 });
+      devPush('net', { method, ...where, status: 0, error: e.name === 'TimeoutError' ? 'timeout' : redact(e.message), ms: Date.now() - t0 });
       throw e;
     }
   };
