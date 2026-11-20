@@ -85,7 +85,20 @@ jobs:
           NOTES="Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. SHA-256 $SUM."
           [ "$TABI_TEST" = true ] && NOTES="$NOTES TEST BUILD: signed with a throwaway key (no signing secrets set)."
           gh release create android-build "$OUT" --prerelease --target "$GITHUB_SHA" --title "Tabi for Android $APP_VERSION$SUFFIX" --notes "$NOTES"
-          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="Android build OK: $OUT ($(du -h "$OUT" | cut -f1)), SHA-256 $SUM. Download it from the android-build pre-release." >/dev/null
+          # Its own release track: a properly signed build from main becomes "Tabi for Android x.y.z",
+          # kept for good (android-vx.y.z), whatever the main Tabi version is. Raise the version in
+          # android/version.properties for each one.
+          MSG="Download it from the android-build pre-release."
+          if [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$TABI_TEST" != true ]; then
+            if gh release view "android-v$APP_VERSION" >/dev/null 2>&1; then
+              MSG="$MSG android-v$APP_VERSION already exists, so no new release: raise versionName and versionCode in android/version.properties."
+            else
+              gh release create "android-v$APP_VERSION" "$OUT" --target "$GITHUB_SHA" --title "Tabi for Android $APP_VERSION" \
+                --notes "Upload it in Tabi: Settings › Android app (admins). Phones with the app are offered the update and install it in place. SHA-256 $SUM."
+              MSG="Released as android-v$APP_VERSION."
+            fi
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" -f body="Android build OK: $OUT ($(du -h "$OUT" | cut -f1)), SHA-256 $SUM. $MSG" >/dev/null
 
       # Errors go on the commit as a comment, so they can be read without opening the Actions log
       - name: Report a failed build

@@ -26,6 +26,17 @@ class Config(ctx: Context) {
     var lastResult: String?
         get() = p.getString("lastResult", null)
         set(v) { p.edit().putString("lastResult", v).apply() }
+    // What the last attempt got back, shown on the Location sharing screen to help find problems
+    var lastTryAt: Long
+        get() = p.getLong("lastTryAt", 0L)
+        set(v) { p.edit().putLong("lastTryAt", v).apply() }
+    /** HTTP status of the last attempt, or 0 when it never reached Tabi */
+    var lastCode: Int
+        get() = p.getInt("lastCode", 0)
+        set(v) { p.edit().putInt("lastCode", v).apply() }
+    var lastError: String?
+        get() = p.getString("lastError", null)
+        set(v) { p.edit().putString("lastError", v).apply() }
     var notifiedCode: Int
         get() = p.getInt("notifiedCode", 0)
         set(v) { p.edit().putInt("notifiedCode", v).apply() }
@@ -33,6 +44,7 @@ class Config(ctx: Context) {
     val connected: Boolean get() = !user.isNullOrBlank() && !token.isNullOrBlank()
 
     fun disconnect() {
-        p.edit().remove("user").remove("token").remove("lastResult").remove("lastOkAt").putBoolean("enabled", false).apply()
+        p.edit().remove("user").remove("token").remove("lastResult").remove("lastOkAt").remove("lastTryAt").remove("lastCode").remove("lastError")
+            .putBoolean("enabled", false).apply()
     }
 }

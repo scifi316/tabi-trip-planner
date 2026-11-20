@@ -12,10 +12,11 @@ import com.google.androidbrowserhelper.trusted.LauncherActivity
 class TwaActivity : LauncherActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Sharing stopped (a restart without "Allow all the time"): opening Tabi starts it again
+        // Opening Tabi starts sharing again if it stopped (a restart without "Allow all the time"),
+        // and sends a location now: the quickest way to pick up "Share my location" being turned on
         val cfg = Config(this)
-        if (cfg.enabled && cfg.connected && Perms.location(this) && !LocationService.running) {
-            try { LocationService.start(this) } catch (e: Exception) { }
+        if (cfg.enabled && cfg.connected && Perms.location(this)) {
+            try { LocationService.ping(this) } catch (e: Exception) { }
         }
     }
 

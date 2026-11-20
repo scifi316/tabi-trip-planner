@@ -241,11 +241,13 @@ It shows:
 - the server's calls to other services
 - the server log
 
-Its one action is **clearing all expenses**, under Overview → Expenses. You type CLEAR to confirm, and can choose everything or shared ones only. The last clear can be undone there or by an admin in Settings. Trip admins can do the same from Settings.
+Its actions are **clearing all expenses** and, only when you turn it on, **password reset links**. Clearing expenses is under Overview → Expenses: you type CLEAR to confirm, and can choose everything or shared ones only. The last clear can be undone there or by an admin in Settings. Trip admins can do the same from Settings.
 
 Things to know:
 - **It shows everyone's location**, so only share the key with people you'd trust with that.
-- **The key is separate from the private-link key**, and also gets its holder past the private link.
+- **Reset links are off by default**, because a reset link can take over any account. If the only admin is locked out, add `DEV_RESET_LINKS=on` to `.env`, restart, make the link under Accounts, then remove the line and restart again.
+- **Keys and tokens are blanked out** in the console's server log and outbound calls (any setting whose name has KEY, TOKEN, SECRET or PASSWORD in it).
+- **The key is separate from the private-link key**, and also gets its holder past the private link, so treat it like an admin password.
 - **Without `DEV_KEY` set**, `/dev` doesn't exist.
 - **Live history is kept in memory**, so the event lists start fresh when the server restarts.
 - **App errors** (since 1.6) lists JavaScript errors from people's browsers, at most 30 per person per server run, with their screen size, app build and browser. Nothing else is sent.

@@ -51,7 +51,8 @@ async function loadAll() {
   await Promise.all([refreshOverview(), refreshPeople()]);
 }
 async function refreshOverview() { overview = await get('/api/dev/overview'); renderHead(); }
-async function refreshPeople() { people = (await get('/api/dev/people')).people; }
+let resetLinksOn = false;
+async function refreshPeople() { const r = await get('/api/dev/people'); people = r.people; resetLinksOn = !!r.resetLinks; }
 async function refreshPlaces() { const r = await get('/api/dev/places'); places = r.places; subgroups = r.subgroups; }
 
 function connectStream() {
@@ -159,7 +160,7 @@ function viewOverview(v) {
         ['Lock-screen notifications', c.push ? `${c.push.n} device${c.push.n === 1 ? '' : 's'} (${c.push.people} people)${c.push.failing ? `, <span class="badge warn">${c.push.failing} failing</span>` : ''}${c.push.lastOk ? `, last delivered ${ago(c.push.lastOk)}` : ''}` : '–']])}</section>
       <section class="panel"><h3>Settings</h3>${kv([
         ['Private-link gate', yes(o.features.privateLinkGate)], ['Cloudflare Tunnel', yes(o.features.tunnel)], ['Durable storage (R2)', yes(o.features.durableStorage)],
-        ['Failover', yes(o.features.ha)], ['Behind proxy', yes(o.features.trustProxy)], ['Session length', `${o.features.sessionDays} days`],
+        ['Failover', yes(o.features.ha)], ['Behind proxy', yes(o.features.trustProxy)], ['Session length', `${o.features.sessionDays} days`], ['Reset links', yes(o.features.resetLinks)],
         ['Trip', `${esc(o.trip.name)}, ${esc(o.trip.start || '?')} to ${esc(o.trip.end || '?')}`], ['Time zone', esc(o.trip.timezone)], ['Currency', esc(o.trip.currency)],
         ['Veto rule', esc(o.trip.vetoRule)], ['Auto-confirm', o.trip.autoConfirm || 'off']])}</section>
       <section class="panel wide"><h3>File storage</h3>${storageHtml(o.storage)}</section>
@@ -200,7 +201,7 @@ async function renderAccountsPanel() {
   if (!el) return;
   try { await refreshPeople(); } catch (e) { el.innerHTML = `<h3>Accounts</h3><p class="hint">${esc(e.message)}</p>`; return; }
   el.innerHTML = `<h3>Accounts</h3>
-    <p class="hint" style="margin-top:0">Former members can’t sign in, but their expenses still count. A reset link lets someone set a new password once, within 24 hours, and signs them out everywhere else.</p>
+    <p class="hint" style="margin-top:0">Former members can’t sign in, but their expenses still count. A reset link lets someone set a new password once, within 24 hours, and signs them out everywhere else.${resetLinksOn ? '' : ' Reset links are off: set DEV_RESET_LINKS=on in .env and restart to make one, then turn it off again.'}</p>
     <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead><tbody>
     ${people.map((p) => `<tr>
       <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
@@ -208,7 +209,7 @@ async function renderAccountsPanel() {
       <td>${({ saved: '<span class="badge good">saved</span>', pending: '<span class="badge warn">made, not saved yet</span>', unconfirmed: '<span class="badge">made (before 1.6), not confirmed</span>' })[p.recoveryStatus] || (p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>')}</td>
       <td class="num">${p.sessions?.n || 0}</td>
       <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? ago(p.sessions.last) : '–'}</td>
-      <td>${p.removedAt ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
+      <td>${p.removedAt || (!resetLinksOn && !resetLinks[p.id]) ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
         : `<button class="btn small" data-reset-link="${p.id}">${p.resetLink ? 'New reset link' : 'Reset link'}</button>${p.resetLink ? `<div class="hint">a link is live until ${fmtTime(p.resetLink.expires_at)}</div>` : ''}`}</td></tr>`).join('')}
     </tbody></table></div>`;
   el.querySelectorAll('[data-reset-link]').forEach((b) => b.onclick = async () => {
