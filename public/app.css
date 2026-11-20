@@ -69,6 +69,9 @@ html, body { margin: 0; height: 100%; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Nothing may make the whole page wider than the screen: on iOS that shifts the fixed layout and where taps land */
 html, body { overflow-x: clip; }
+/* TA-15: the page scrolls but never pinch- or double-tap-zooms, like an app. The map, photo crop and sheet
+   handles set their own touch-action and handle pinches themselves, so they're unaffected. */
+html, body { touch-action: pan-x pan-y; }
 body {
   font-family: var(--font);
   font-size: 15px;
