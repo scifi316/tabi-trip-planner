@@ -1,4 +1,5 @@
 // Small UI toolkit: escaping, icons, avatars, sheets, toasts, date helpers.
+import { attachSheetDrag } from './sheetdrag.js';
 
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 export const icon = (name, cls = '') => `<svg class="i ${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
@@ -106,6 +107,9 @@ export function openSheet({ title = '', sub = '', head = '', body = '', foot = '
       if (api.closed) return;
       api.closed = true;
       sheetStack = sheetStack.filter((s) => s !== api);
+      drag.cancel();
+      // Slide away from wherever a drag left it: the inline offset would otherwise win over .closing
+      el.style.transform = '';
       el.classList.add('closing');
       scrim?.remove();
       setTimeout(() => el.remove(), 200);
@@ -119,16 +123,8 @@ export function openSheet({ title = '', sub = '', head = '', body = '', foot = '
   scrim?.addEventListener('pointerdown', () => { scrimDown = true; });
   scrim?.addEventListener('click', () => { if (scrimDown) api.close(); scrimDown = false; });
 
-  // drag the grab handle down to dismiss
-  const grab = el.querySelector('.sheet-grab');
-  let startY = null;
-  grab.addEventListener('pointerdown', (e) => { startY = e.clientY; grab.setPointerCapture(e.pointerId); });
-  grab.addEventListener('pointermove', (e) => { if (startY != null) el.style.transform = `translateY(${Math.max(0, e.clientY - startY)}px)`; });
-  grab.addEventListener('pointerup', (e) => {
-    const dy = e.clientY - (startY ?? e.clientY);
-    startY = null;
-    if (dy > 80) api.close(); else el.style.transform = '';
-  });
+  // pull the strip at the top, or the header, down to dismiss (TA-18: see sheetdrag.js)
+  const drag = attachSheetDrag(el, { onDismiss: () => api.close() });
 
   sheetStack.push(api);
   el.tabIndex = -1;

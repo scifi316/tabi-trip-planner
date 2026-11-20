@@ -365,7 +365,10 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
 .btn .i { width: 19px; height: 19px; }
 
 /* day strip = calendar */
-.days { display: flex; gap: 6px; overflow-x: auto; padding: 4px 14px 10px; scrollbar-width: none; scroll-snap-type: x proximity; }
+/* TA-18: the snap points line up inside the strip's padding, not on the screen edge. Without this, the
+   first day's snap point is 14px in, so scrolling back to the start (or tapping "All days") snapped
+   "All days" flush against the edge of the screen and clipped it. */
+.days { display: flex; gap: 6px; overflow-x: auto; padding: 4px 14px 10px; scroll-padding-inline: 14px; scrollbar-width: none; scroll-snap-type: x proximity; }
 .days::-webkit-scrollbar { display: none; }
 .day {
   flex: none; scroll-snap-align: start; min-width: 56px; padding: 7px 10px 8px; border-radius: var(--r-m); border: 1px solid var(--line);
@@ -474,15 +477,18 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.4; }
 .sheet {
   position: fixed; z-index: 41; left: 0; right: 0; bottom: 0; max-height: 88dvh; display: flex; flex-direction: column;
   background: var(--surface); border-radius: var(--r-l) var(--r-l) 0 0; box-shadow: var(--shadow-lift);
-  padding-bottom: var(--safe-b); animation: rise .28s var(--ease);
+  padding-bottom: var(--safe-b); animation: rise .28s var(--ease); transition: transform .22s var(--ease);
 }
+/* TA-18: while a finger pulls the sheet it follows exactly; let go and it eases back (or slides away) */
+.sheet.dragging { transition: none; user-select: none; -webkit-user-select: none; }
 .sheet.peek { z-index: 30; }
 .sheet:focus { outline: none; }
 @keyframes rise { from { transform: translateY(100%); } }
 .sheet.closing { transform: translateY(100%); transition: transform .2s ease-in; }
 .sheet-grab { flex: none; height: 22px; display: grid; place-items: center; cursor: grab; touch-action: none; }
 .sheet-grab::before { content: ""; width: 38px; height: 5px; border-radius: 3px; background: var(--surface-3); }
-.sheet-head { flex: none; display: flex; align-items: flex-start; gap: 10px; padding: 0 12px 10px 18px; }
+/* TA-18: the header is part of the handle on touch screens (sheetdrag.js), so it mustn't scroll the page */
+.sheet-head { flex: none; display: flex; align-items: flex-start; gap: 10px; padding: 0 12px 10px 18px; touch-action: none; }
 .sheet-head h2 { margin: 0; font-size: 20px; line-height: 1.2; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .sheet-head .grow { flex: 1; min-width: 0; padding-top: 2px; }
 .sheet-head .sub { font-size: 13.5px; color: var(--ink-2); margin-top: 3px; }
