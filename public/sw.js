@@ -6,6 +6,7 @@ const SHELL = [
   '/', '/index.html', '/app.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/cluster-motion.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
+  '/js/sheetdrag.js',
   '/js/zoomlock.js', '/js/photozoom.js',
   '/changelog.json', '/js/changelog.js', '/js/whatsnew.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
