@@ -11,6 +11,15 @@
       ]
     },
     {
+      "version": "1.8.4",
+      "date": "2026-11-20",
+      "prs": [33],
+      "changes": [
+        "Pinch a picture or GIF in the group chat to open it full screen, then pinch, double-tap or drag to zoom.",
+        "Tap a GIF in the chat to open it full screen."
+      ]
+    },
+    {
       "version": "1.8.3",
       "date": "2026-11-20",
       "tickets": ["TA-15"],
