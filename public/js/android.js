@@ -36,7 +36,9 @@ export function closedSharingHtml(badge) {
       <div class="help">The Tabi app can keep sharing in the background, like Find My. It asks Android for location permission, and shows a notification while it shares, with a Stop button.</div>
       ${badge}
       <div class="btn-row"><a class="btn small primary" href="${esc(setupLink())}" data-android-setup>${icon('pin', 'small')}Set up background sharing</a>
-        ${updateWaiting() ? `<button class="btn small" data-android-sheet>${icon('download', 'small')}Update the app (${esc(a.version)})</button>` : ''}</div>
+        ${updateWaiting() ? (inApp().v >= 3 // 1.1.0 and later update themselves in place
+    ? `<a class="btn small" href="tabi://update">${icon('download', 'small')}Update the app (${esc(a.version)})</a>`
+    : `<button class="btn small" data-android-sheet>${icon('download', 'small')}Update the app (${esc(a.version)})</button>`) : ''}</div>
       <button class="linklike" data-owntracks>Or use OwnTracks instead</button>
     </div>`;
   }

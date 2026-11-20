@@ -394,12 +394,12 @@ class LocationService : Service() {
         if (latest <= BuildConfig.VERSION_CODE || cfg.notifiedCode >= latest) return
         cfg.notifiedCode = latest
         val open = PendingIntent.getActivity(this, 4,
-            Intent(this, TwaActivity::class.java).setData(Uri.parse("https://${cfg.host}/#android-app")),
+            Intent(this, SetupActivity::class.java).setAction(SetupActivity.ACTION_UPDATE),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val n = Notification.Builder(this, "alerts")
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("An update to the Tabi app is ready")
-            .setContentText("Tap to download it from Tabi.")
+            .setContentText("Tap to update. It installs over this one.")
             .setContentIntent(open)
             .setAutoCancel(true)
             .setColor(getColor(R.color.icon_bg))
