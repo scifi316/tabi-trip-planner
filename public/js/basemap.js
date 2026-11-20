@@ -13,11 +13,16 @@ export const PHOTO_HOST = 'cyberjapandata.gsi.go.jp';
 const PHOTO_TILES = `https://${PHOTO_HOST}/xyz/seamlessphoto/{z}/{x}/{y}.jpg`;
 const PHOTO_CREDIT = '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル (GSI)</a>';
 
+// This session's choice wins; storage only carries it over to the next visit. Where storage is
+// blocked (some private modes), the choice still holds until the page is closed.
+let chosen = null;
 export function satelliteOn() {
+  if (chosen) return chosen === 'satellite';
   try { return localStorage.getItem(BASEMAP_KEY) === 'satellite'; } catch { return false; }
 }
 export function setSatellite(on) {
-  try { localStorage.setItem(BASEMAP_KEY, on ? 'satellite' : 'map'); } catch { /* private mode: just this session */ }
+  chosen = on ? 'satellite' : 'map';
+  try { localStorage.setItem(BASEMAP_KEY, chosen); } catch { /* kept in memory above */ }
 }
 
 // Called on every 'style.load'.

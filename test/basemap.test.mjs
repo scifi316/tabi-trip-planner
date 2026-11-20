@@ -8,6 +8,7 @@ globalThis.localStorage = {
   setItem: (k, v) => store.set(k, String(v)),
 };
 const { dressStyle, satelliteOn, setSatellite } = await import('../public/js/basemap.js');
+const onAtStart = satelliteOn();
 
 // A stand-in for a MapLibre map: just enough of the style API, recording what changes.
 function fakeMap(layers) {
@@ -49,7 +50,7 @@ const LIBERTY = [
   { id: 'poi_r1', type: 'symbol', source: 'openmaptiles', 'source-layer': 'poi', layout: { 'icon-image': 'x', 'text-field': '{name}' } },
 ];
 
-beforeEach(() => store.clear());
+beforeEach(() => { setSatellite(false); store.clear(); });
 
 test('dark style gets extruded buildings from zoom 14, above the roads and below the labels after them', () => {
   const map = fakeMap(DARK);
@@ -94,12 +95,26 @@ test('satellite puts GSI photos at the bottom and keeps only roads, borders and 
   assert.equal(map.style.layers.find((l) => l.id === 'poi_r1').paint['text-color'], '#FFFFFF');
 });
 
-test('satellite is off by default and survives storage being unavailable', () => {
-  assert.equal(satelliteOn(), false);
+test('satellite is off by default', () => {
+  assert.equal(onAtStart, false);
+});
+
+test('satellite can be switched on and off when storage is blocked', () => {
   const saved = globalThis.localStorage;
   globalThis.localStorage = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
   try {
-    assert.equal(satelliteOn(), false);
     assert.doesNotThrow(() => setSatellite(true));
+    assert.equal(satelliteOn(), true);
+    const map = fakeMap(LIBERTY);
+    dressStyle(map, { dark: false });
+    assert.ok(map.style.sources['gsi-photo']);
+    setSatellite(false);
+    assert.equal(satelliteOn(), false);
   } finally { globalThis.localStorage = saved; }
+});
+
+test('the saved choice is used on the next visit', () => {
+  store.set('tabi.basemap', 'satellite');
+  // A fresh page load has made no choice yet, so storage decides: simulate it with a new import.
+  return import('../public/js/basemap.js?fresh').then((fresh) => assert.equal(fresh.satelliteOn(), true));
 });
