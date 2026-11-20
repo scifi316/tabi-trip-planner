@@ -12,6 +12,14 @@
       ]
     },
     {
+      "version": "1.8.6",
+      "date": "2026-11-20",
+      "tickets": ["TA-7"],
+      "changes": [
+        "The developer console stays steady while live updates arrive: no more flicker, jumping, or text you've typed being cleared."
+      ]
+    },
+    {
       "version": "1.8.5",
       "date": "2026-11-20",
       "tickets": ["TA-17"],
