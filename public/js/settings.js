@@ -13,6 +13,7 @@ import { openPhotoEditor } from './photo.js';
 import { ownTracksBadge } from './owntracks.js';
 import { recoveryAction, recoveryStatus, openRecoverySetup, openResetLink } from './account.js';
 import { pushBlockHtml, bindPushBlock } from './push.js';
+import { fillChangelog } from './whatsnew.js';
 import { closedSharingHtml, bindClosedSharing, inApp, adminHtml as androidAdminHtml, bindAdmin as bindAndroidAdmin } from './android.js';
 
 const root = () => document.getElementById('screen-settings');
@@ -217,6 +218,10 @@ export function render() {
       <div data-act-list>${activityListHtml()}</div>
     </div></section>
 
+    <section class="section" data-section="changelog"><h2>Changelog</h2><div class="card changelog" data-changelog>
+      <div class="row"><div class="help">Loading…</div></div>
+    </div></section>
+
     <div class="about-row"><div class="grow"><div class="label">Tabi ${esc(state.config.version || '')}</div>
       <div class="help num">Build ${esc((document.querySelector('meta[name=tabi-build]')?.content || '').split('-').pop())}${state.config.server ? `, from ${esc(state.config.server)}` : ''}${state.config.build && state.config.build !== document.querySelector('meta[name=tabi-build]')?.content ? ' <b>(an update is waiting)</b>' : ''}</div></div>
       <button class="btn small" data-hard-reload data-tip="Clears Tabi’s offline copy of the app and loads the newest version. Your data, saved maps and sign-in stay.">Reload app</button></div>
@@ -245,6 +250,8 @@ function bind(el) {
   q.onkeydown = (e) => { if (e.key === 'Escape' && q.value) { q.value = ''; onActivitySearch({ target: q }); } };
   renderActivityList();
   el.querySelector('[data-hard-reload]')?.addEventListener('click', () => hardReload());
+  const changelog = el.querySelector('[data-changelog]');
+  if (changelog) fillChangelog(changelog);
   el.querySelector('[data-stays]')?.addEventListener('click', () => import('./stays.js').then((m) => m.openStays()));
   el.querySelector('[data-emojis]')?.addEventListener('click', () => import('./emoji.js').then((m) => m.openEmojiPicker({ title: 'Custom emojis', onPick: null })));
   el.querySelectorAll('[data-recovery]').forEach((b) => b.onclick = () => recoveryAction());

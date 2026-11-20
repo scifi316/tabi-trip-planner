@@ -64,6 +64,14 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* iOS enlarges text in landscape unless a page opts out, and in a home-screen app it doesn't always shrink it
+   back after turning to portrait (TA-13). 100%, not none, so Safari's own text-size setting still works. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* Nothing may make the whole page wider than the screen: on iOS that shifts the fixed layout and where taps land */
+html, body { overflow-x: clip; }
+/* TA-15: the page scrolls but never pinch- or double-tap-zooms, like an app. The map, photo viewer, photo crop
+   and sheet handles set their own touch-action and handle pinches themselves, so they're unaffected. */
+html, body { touch-action: pan-x pan-y; }
 body {
   font-family: var(--font);
   font-size: 15px;
@@ -1108,8 +1116,10 @@ button.emoji-cell:hover { background: var(--surface-3); }
 .pv-top .icon-btn:hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .pv-top .grow { flex: 1; }
 .pv-count { font-size: 13px; color: #aab; }
-.pv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: pan-y; }
-.pv-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* The viewer handles pinch, double-tap and drag itself (js/photozoom.js), since the page never zooms (TA-15) */
+.pv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.pv-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: center; }
+.pv-stage.zoomed { cursor: grab; }
 .pv-low { filter: blur(6px); opacity: .5; }
 .pv-nav { position: absolute; top: 50%; translate: 0 -50%; width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center; background: rgba(0, 0, 0, .45); color: #fff; }
 .pv-nav.prev { left: 10px; } .pv-nav.next { right: 10px; }
@@ -1395,3 +1405,18 @@ a.btn { text-decoration: none; }
 }
 .android-steps .help { display: block; }
 .android-steps .btn { justify-self: start; margin-top: 4px; }
+
+/* ---------- changelog (Settings) and What's new ---------- */
+.changelog .release + .release { border-top: 1px solid var(--line); }
+.changelog .release > summary { display: flex; align-items: baseline; gap: 10px; padding: 12px 14px; min-height: 48px; cursor: pointer; list-style: none; -webkit-tap-highlight-color: transparent; }
+.changelog .release > summary::-webkit-details-marker { display: none; }
+.changelog .release > summary .label { font-weight: 600; flex: 1; }
+.changelog .release > summary .help { font-size: 13px; color: var(--ink-2); }
+.changelog .release > summary::after { content: ''; width: 8px; height: 8px; border: solid var(--ink-3); border-width: 0 2px 2px 0; transform: translateY(-2px) rotate(45deg); transition: transform .2s var(--ease); align-self: center; }
+.changelog .release[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
+.changelog .release ul { margin: -4px 0 0; padding: 0 16px 12px 32px; color: var(--ink); font-size: 14px; line-height: 1.45; }
+.changelog .release li + li { margin-top: 4px; }
+.changelog .release.older > .release { border-top: 1px solid var(--line); }
+.changelog .release.older > .release > summary { padding-left: 24px; }
+.whatsnew .changelog { margin: 0; }
+.whatsnew-more { font-size: 13px; color: var(--ink-2); margin: 12px 4px 0; }

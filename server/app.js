@@ -45,7 +45,10 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
 
   // Developer console: separate secret (DEV_KEY). Read-only views of the database, live locations,
   // OwnTracks traffic, outbound calls and server logs. It also lets the holder past the private-link gate.
+  // Password reset links from the console can take over any account, so they're off unless
+  // DEV_RESET_LINKS=on (for the day the only admin is locked out).
   const DEV_KEY = env.DEV_KEY || '';
+  const DEV_RESET_LINKS = /^(1|true|on|yes)$/i.test(env.DEV_RESET_LINKS || '');
   const devToken = DEV_KEY ? crypto.createHmac('sha256', DEV_KEY).update('tabi-dev-v1').digest('base64url').slice(0, 32) : '';
   const isDev = (req) => { const c = DEV_KEY && parseCookies(req).tabi_dev; return !!c && auth.safeEqual(c, devToken); };
 
@@ -78,6 +81,13 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const getTrip = () => ({ ...DEFAULT_TRIP, ...getSetting('trip', {}) });
   // The Android app an admin uploaded (see apk.js); what everyone sees of it
   const androidApp = () => getSetting('androidApp', null);
+  async function serveApk(req, res, app) {
+    const buf = app && await blobs.get(app.key);
+    if (!buf) return send(res, 404, { error: 'The Android app hasn’t been uploaded yet.' });
+    res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': buf.length,
+      'Content-Disposition': `attachment; filename="Tabi-${app.versionName}${app.test ? '-test' : ''}.apk"`, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
+    return res.end(req.method === 'HEAD' ? undefined : buf);
+  }
   const androidPublic = (a = androidApp()) => (a ? { version: a.versionName, code: a.versionCode, size: a.size, at: a.at, test: !!a.test } : null);
 
   const cache = {
@@ -664,6 +674,21 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return send(res, 200, { ok: true });
       }
 
+      // The Android app updates itself: it asks what the latest version is and downloads it, signing
+      // in the way it does for locations (name + OwnTracks token). The download's SHA-256 is its
+      // file name in storage, so the app can check it got exactly what Tabi published.
+      if ((p === '/api/app/latest' || p === '/api/app/tabi.apk') && (req.method === 'GET' || req.method === 'HEAD') && String(req.headers.authorization || '').startsWith('Basic ')) {
+        const [name, tok] = Buffer.from(String(req.headers.authorization).slice(6), 'base64').toString().split(':');
+        const u = name && (db.prepare('SELECT * FROM users WHERE name = ?').get(name) || db.prepare('SELECT * FROM users WHERE name = ? COLLATE NOCASE').get(name));
+        if (!u || u.removed_at || !tok || !u.owntracks_token || tok !== u.owntracks_token) return send(res, 401, { error: 'Bad credentials' }, { 'WWW-Authenticate': 'Basic realm="tabi"' });
+        const app = androidApp();
+        if (p === '/api/app/latest') {
+          return send(res, 200, app ? { version: app.versionName, code: app.versionCode, size: app.size, sha256: app.key.split('.')[0], test: !!app.test } : { version: null, code: 0 }, { 'Cache-Control': 'no-store' });
+        }
+        devPush('op', { user: u.name, op: 'android.download', ok: !!app, version: app?.versionName, via: 'app' });
+        return serveApk(req, res, app);
+      }
+
       // OwnTracks HTTP mode: Basic auth with <name>:<owntracks token>
       if (p === '/api/owntracks' && req.method === 'POST') {
         const h = String(req.headers.authorization || '');
@@ -1021,14 +1046,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         broadcast({ t: 'app', app: null });
         return send(res, 200, { ok: true });
       }
-      if (p === '/api/app/tabi.apk' && (req.method === 'GET' || req.method === 'HEAD')) {
-        const app = androidApp();
-        const buf = app && await blobs.get(app.key);
-        if (!buf) return send(res, 404, { error: 'The Android app hasn’t been uploaded yet.' });
-        res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': buf.length,
-          'Content-Disposition': `attachment; filename="Tabi-${app.versionName}${app.test ? '-test' : ''}.apk"`, 'Cache-Control': 'private, no-cache', 'X-Content-Type-Options': 'nosniff', ...res._extraHeaders });
-        return res.end(req.method === 'HEAD' ? undefined : buf);
-      }
+      if (p === '/api/app/tabi.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res, androidApp());
       const cf = p.match(/^\/api\/chat\/f\/([a-f0-9]{64}\.(?:jpg|png|webp|gif))$/);
       if (cf && req.method === 'GET') {
         if (!chat.canSeeFile(user.id, cf[1])) return send(res, 404, { error: 'Not found' });
@@ -2008,6 +2026,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     // Accounts: a one-time password reset link for anyone (e.g. when the only admin is the one locked out).
     if (p === '/api/dev/reset-link' && req.method === 'POST') {
       if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-site request refused.' });
+      if (!DEV_RESET_LINKS) return send(res, 403, { error: 'Reset links are off. Set DEV_RESET_LINKS=on in .env and restart to turn them on.' });
       return readBody(req).then((b) => {
         const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+b.userId);
         if (!target) return send(res, 404, { error: 'No such person on the trip.' });
@@ -2058,14 +2077,14 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         build: BUILD,
         trip: { ...tripForClient(null), joinCode: undefined },
         config: CONFIG,
-        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180) },
+        features: { privateLinkGate: auth.gateEnabled, tunnel: !!env.TUNNEL_TOKEN, durableStorage: !!blobs.durable, ha: /^(1|true|on|yes)$/i.test(env.HA_MODE || ''), trustProxy: TRUST_PROXY, sessionDays: +(env.SESSION_DAYS || 180), resetLinks: DEV_RESET_LINKS },
       });
     }
     if (p === '/api/dev/people') {
       const lastOt = {};
       for (const e of devRecent('owntracks', { limit: 300 })) if (e.userId) lastOt[e.userId] = e;
       const locs = Object.fromEntries(db.prepare('SELECT * FROM locations').all().map((l) => [l.user_id, l]));
-      return send(res, 200, { people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
+      return send(res, 200, { resetLinks: DEV_RESET_LINKS, people: db.prepare('SELECT * FROM users ORDER BY id').all().map((u) => ({
         id: u.id, name: u.name, color: u.color, admin: !!u.is_admin, sharing: !!u.share_location, createdAt: u.created_at,
         removedAt: u.removed_at || null, recoverySet: !!u.recovery_hash, recoveryStatus: recoveryStatus(u), hasPassword: /^[0-9a-f]{32}:[0-9a-f]{128}$/.test(u.pass_hash),
         resetLink: db.prepare('SELECT created_at, expires_at FROM password_resets WHERE user_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1').get(u.id, now()) || null,

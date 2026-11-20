@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
@@ -22,18 +23,28 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.util.concurrent.Executors
 
 /**
  * Background location sharing: connect (from the link in Tabi's Settings), allow what Android
  * needs, and start or stop. Everything is explained in plain words; nothing here is required to use Tabi.
  */
 class SetupActivity : Activity() {
+    companion object {
+        const val ACTION_UPDATE = "app.tabi.trip.UPDATE"
+    }
+
     private lateinit var cfg: Config
     private lateinit var box: LinearLayout
     private var chain = false          // walking through the permissions after "Start sharing"
     private val asked = mutableSetOf<String>()
     private var notice: String? = null
     private val ui = Handler(Looper.getMainLooper())
+    private val bg = Executors.newSingleThreadExecutor()
+    private var latest: Updater.Latest? = null
+    private var checkedAt = 0L
+    private var updating: String? = null   // what the update is doing, shown on the screen
+    private var updateAfterPermission = false
     private val tick = object : Runnable {
         override fun run() {
             render()
@@ -68,6 +79,8 @@ class SetupActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
+        checkForUpdate()
+        if (updateAfterPermission && Updater.canInstall(this)) { updateAfterPermission = false; startUpdate() }
         ui.postDelayed(tick, 10_000L)
         if (chain) ui.post { next() }
     }
@@ -83,7 +96,15 @@ class SetupActivity : Activity() {
     }
 
     // tabi://setup?h=<host>&g=<private-link key>&u=<name>&t=<OwnTracks token>&start=1
+    // tabi://update, or the "update ready" notification: update the app in place
     private fun handle(i: Intent?) {
+        if (i?.action == Updater.ACTION_STATUS) { installStatus(i); return }
+        if (i?.action == ACTION_UPDATE || i?.data?.host == "update") {
+            setIntent(Intent(this, SetupActivity::class.java))
+            startUpdate()
+            render()
+            return
+        }
         val d = i?.data
         if (d != null && d.scheme == "tabi" && d.host == "setup") {
             val h = d.getQueryParameter("h")
@@ -187,6 +208,74 @@ class SetupActivity : Activity() {
         startActivity(Intent(this, TwaActivity::class.java).setData(Uri.parse("https://${BuildConfig.DEFAULT_HOST}/$fragment")))
     }
 
+    // ---------- updating the app in place ----------
+    private fun checkForUpdate(force: Boolean = false) {
+        if (!cfg.connected || (!force && System.currentTimeMillis() - checkedAt < 60_000L)) return
+        checkedAt = System.currentTimeMillis()
+        bg.execute {
+            val l = Updater.check(this)
+            ui.post { latest = l; render() }
+        }
+    }
+
+    private fun startUpdate() {
+        if (updating != null && updating != "failed") return
+        if (!cfg.connected) { notice = "Connect this phone first (see below), then update."; render(); return }
+        if (!Updater.canInstall(this)) {
+            // Android asks once whether Tabi may install apps; we carry on when they come back
+            updateAfterPermission = true
+            notice = "Allow Tabi to install apps, then come back here: the update carries on by itself."
+            render()
+            try { startActivity(Updater.installPermissionIntent(this)) } catch (e: Exception) { openAppSettings() }
+            return
+        }
+        updating = "Checking…"
+        render()
+        bg.execute {
+            val l = Updater.check(this)
+            if (!Updater.isNewer(l)) {
+                ui.post { latest = l; updating = null; notice = "You have the latest version (${BuildConfig.VERSION_NAME})."; render() }
+                return@execute
+            }
+            val target = l!!
+            try {
+                val file = Updater.download(this, target) { pct -> ui.post { updating = "Downloading ${target.version}… $pct%"; render() } }
+                ui.post {
+                    updating = "Installing…"
+                    render()
+                    try { Updater.install(this, file) } catch (e: Exception) { failed(e.message ?: "Android couldn’t start the update.") }
+                }
+            } catch (e: Exception) {
+                ui.post { failed(e.message ?: "The download didn’t finish. Check your connection and try again.") }
+            }
+        }
+    }
+
+    private fun failed(why: String) {
+        updating = null
+        notice = why
+        render()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installStatus(i: Intent) {
+        setIntent(Intent(this, SetupActivity::class.java))
+        when (val status = i.getIntExtra(PackageInstaller.EXTRA_STATUS, -999)) {
+            PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                // Android's "Do you want to update this app?"
+                val confirm: Intent? = if (Build.VERSION.SDK_INT >= 33) i.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                else i.getParcelableExtra(Intent.EXTRA_INTENT)
+                if (confirm != null) startActivity(confirm) else failed("Android didn’t ask to confirm the update. Try again.")
+            }
+            PackageInstaller.STATUS_SUCCESS -> { updating = null; notice = "Updated."; render() }
+            PackageInstaller.STATUS_FAILURE_ABORTED -> failed("Update cancelled. Tap Update when you’re ready.")
+            PackageInstaller.STATUS_FAILURE_CONFLICT, PackageInstaller.STATUS_FAILURE_INCOMPATIBLE ->
+                failed("This version is signed differently from the one on your phone, so Android won’t update it in place. Uninstall Tabi, install the new version from Tabi’s Settings, and connect again (just this once).")
+            PackageInstaller.STATUS_FAILURE_STORAGE -> failed("Not enough space on the phone for the update.")
+            else -> failed("The update didn’t install (" + (i.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "status $status") + ").")
+        }
+    }
+
     // ---------- the screen ----------
     private fun render() {
         box.removeAllViews()
@@ -196,6 +285,11 @@ class SetupActivity : Activity() {
         add(head)
         add(label("Shares where you are with the trip while Tabi is closed and your phone is in your pocket. Only people on the trip can see it, and you can stop any time.", 15f, R.color.ink2), 12)
         notice?.let { add(callout(it), 16) }
+        updating?.let { add(card("Updating Tabi", it), 16) }
+        latest?.takeIf { Updater.isNewer(it) && updating == null }?.let { l ->
+            add(card("Update to ${l.version}", "You have ${BuildConfig.VERSION_NAME}. The update installs over this one: you stay connected and keep sharing."), 16)
+            add(primary("Update now") { startUpdate() }, 8)
+        }
 
         if (!cfg.connected) {
             add(card("Connect your account", "Open Tabi, go to Settings, and under Location tap “Set up background sharing”. That links this app to your account."), 20)
@@ -207,6 +301,8 @@ class SetupActivity : Activity() {
         val on = cfg.enabled && LocationService.running
         add(status(on), 20)
         add(if (on) secondary("Stop sharing") { stopSharing() } else primary("Start sharing") { chain = true; asked.clear(); next() }, 12)
+        if (on) add(secondary("Send my location now") { LocationService.ping(this); ui.postDelayed({ render() }, 3_000L) }, 8)
+        lastTry()?.let { add(label(it, 12.5f, R.color.ink2), 10) }
 
         add(label("To keep it working", 14f, R.color.ink2, true), 28)
         val loc = Perms.location(this)
@@ -246,6 +342,19 @@ class SetupActivity : Activity() {
         col.addView(label(text, 14.5f, R.color.ink2).apply { setPadding(0, dp(2), 0, 0) })
         c.addView(col, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         return c
+    }
+
+    // For finding problems: when the app last tried, and what Tabi answered
+    private fun lastTry(): String? {
+        if (cfg.lastTryAt <= 0) return null
+        val what = when (val code = cfg.lastCode) {
+            0 -> "couldn’t reach Tabi" + (cfg.lastError?.let { " ($it)" } ?: "")
+            200 -> "Tabi took it" + if (cfg.lastResult == "paused") ", but sharing is off in Tabi" else ""
+            401 -> "Tabi didn’t accept the name and token (401)"
+            404 -> "Tabi wasn’t found: the private link key may be wrong (404)"
+            else -> "Tabi answered $code"
+        }
+        return "Last try ${ago(cfg.lastTryAt)}: $what."
     }
 
     private fun lastText(prefix: String) = if (cfg.lastOkAt > 0) prefix + ago(cfg.lastOkAt) else ""

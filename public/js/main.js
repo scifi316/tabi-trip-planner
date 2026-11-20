@@ -10,6 +10,22 @@ import { openPhotoEditor } from './photo.js';
 import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
 import { rememberApp } from './android.js';
+import { lockZoom, resetZoom } from './zoomlock.js';
+import { announceUpdate, offerUpdate } from './whatsnew.js';
+
+lockZoom(); // TA-15: the page never pinch-zooms on a phone; the map still does
+
+// TA-13: after turning the phone, an iOS home-screen app can be left zoomed in or scrolled, which shifts the
+// fixed layout so taps land in the wrong place until the app is restarted. Once the turn has settled, put the
+// zoom back to 100% and the page back at the top (the app's screens scroll inside themselves, never the page).
+function settleAfterTurn() {
+  if (!$('#app').hidden && (scrollX || scrollY)) scrollTo(0, 0);
+  resetZoom();
+}
+let turnTimers = [];
+const onTurn = () => { turnTimers.forEach(clearTimeout); turnTimers = [300, 900].map((ms) => setTimeout(settleAfterTurn, ms)); };
+(screen.orientation?.addEventListener ? screen.orientation.addEventListener('change', onTurn) : addEventListener('orientationchange', onTurn));
+matchMedia('(orientation: portrait)').addEventListener?.('change', onTurn);
 
 rememberApp(); // opened from the Android app: remember it, tidy the address
 addEventListener('hashchange', () => {
@@ -237,6 +253,7 @@ async function startApp() {
   on('state', maybePromptRecovery);
   on('error', (msg) => toast(msg));
   refreshMeButtons();
+  announceWhenSettled();
 
   const hash = location.hash.slice(1);
   if (hash === 'android-app') { // "an update is ready" from the Android app
@@ -342,13 +359,23 @@ function reloadWhenIdle(target) {
   const tries = st?.target === target ? st.tries : 0;
   if (tries >= 3) return stuckOnOldBuild(target);
   const wait = Math.max(0, (st?.at || 0) + 60e3 - Date.now()); // at most one try a minute: never a loop
-  reloadTimer = setTimeout(function tryNow() {
-    if (busy() && !document.hidden) { reloadTimer = setTimeout(tryNow, 4000); return; }
+  const reloadNow = () => {
+    if (reloadTimer === -1) return;
+    clearTimeout(reloadTimer);
+    reloadTimer = -1; // never twice
     sessionStorage.setItem(UPD, JSON.stringify({ target, tries: tries + 1, at: Date.now(), from: PAGE_BUILD }));
     sessionStorage.setItem('tabi.justUpdated', '1');
     if (tries === 0) {
       (async () => { try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch { /* offline */ } location.reload(); })();
     } else hardReload(target);
+  };
+  reloadTimer = setTimeout(function tryNow() {
+    if (busy() && !document.hidden) {
+      offerUpdate(target, reloadNow); // say a new version is ready, with Reload, instead of waiting silently
+      reloadTimer = setTimeout(tryNow, 4000);
+      return;
+    }
+    reloadNow();
   }, wait);
 }
 let stuckShown = false;
@@ -366,12 +393,24 @@ on('state', () => {
 if (new URL(location.href).searchParams.has('v')) { // tidy the address bar after a hard reload
   const u = new URL(location.href); u.searchParams.delete('v'); history.replaceState(null, '', u.pathname + u.search + u.hash);
 }
-if (sessionStorage.getItem('tabi.justUpdated')) {
+// "Tabi updated to 1.8.5 · What's new", once per version on this device, however the new version
+// arrived: a reload above, a fresh launch, or the browser fetching it on its own. Waits for the
+// server (or a few seconds offline) so it isn't announced on a page that's about to reload anyway.
+function announceWhenSettled() {
+  const justUpdated = !!sessionStorage.getItem('tabi.justUpdated');
   sessionStorage.removeItem('tabi.justUpdated');
-  const off = on('state', () => {
-    off();
-    if (state.config.build === PAGE_BUILD) toast(`Tabi updated to ${state.config.version || 'the latest version'}`);
-  });
+  let done = false;
+  const settle = async (fromServer) => {
+    if (done) return;
+    done = true; off(); clearTimeout(fallback);
+    // The server's build is only fresh once it has answered (offline, config is last session's).
+    if (fromServer && state.config.build && /^\d/.test(PAGE_BUILD) && state.config.build !== PAGE_BUILD) return; // a newer one is coming
+    const said = await announceUpdate(PAGE_BUILD);
+    // Same version number, new build (a fix shipped without a version bump): the old short toast.
+    if (!said && justUpdated && fromServer) toast('Tabi updated');
+  };
+  const off = on('state', () => setTimeout(() => settle(true), 800));
+  const fallback = setTimeout(() => settle(false), 6000);
 }
 
 if ('serviceWorker' in navigator && (isSecureContext)) {
