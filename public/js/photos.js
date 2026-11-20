@@ -3,6 +3,7 @@
 // small thumbnail for lists, and re-drawn on a canvas so the location and camera data are gone.
 import { state, on, op, emit, userById, today, tripDays } from './store.js';
 import { esc, icon, avatar, ago, openSheet, toast, confirmSheet, fmtDay } from './ui.js';
+import { photoZoom } from './photozoom.js';
 
 const PER_DAY = 5;
 const FULL_PX = 2048, THUMB_PX = 480;
@@ -188,11 +189,8 @@ export function openViewer(list, index = 0) {
       const r = await fetch(`/api/photos/${p.id}`, { method: 'DELETE', credentials: 'same-origin' });
       if (!r.ok) toast((await r.json().catch(() => ({}))).error || 'Couldn’t remove it.');
     });
-    // swipe between photos
-    const stage = el.querySelector('[data-stage]');
-    let x0 = null;
-    stage.onpointerdown = (e) => { x0 = e.clientX; };
-    stage.onpointerup = (e) => { if (x0 != null && Math.abs(e.clientX - x0) > 50 && list.length > 1) go(e.clientX < x0 ? 1 : -1); x0 = null; };
+    // pinch or double-tap to zoom; swipe between photos when not zoomed in
+    photoZoom(el.querySelector('[data-stage]'), { onSwipe: (d) => { if (list.length > 1) go(d); } });
   }
   render();
   el.focus();

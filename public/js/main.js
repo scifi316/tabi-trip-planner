@@ -10,18 +10,16 @@ import { openPhotoEditor } from './photo.js';
 import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
 import { rememberApp } from './android.js';
+import { lockZoom, resetZoom } from './zoomlock.js';
+
+lockZoom(); // TA-15: the page never pinch-zooms on a phone; the map still does
 
 // TA-13: after turning the phone, an iOS home-screen app can be left zoomed in or scrolled, which shifts the
 // fixed layout so taps land in the wrong place until the app is restarted. Once the turn has settled, put the
 // zoom back to 100% and the page back at the top (the app's screens scroll inside themselves, never the page).
 function settleAfterTurn() {
   if (!$('#app').hidden && (scrollX || scrollY)) scrollTo(0, 0);
-  const vv = window.visualViewport, meta = document.querySelector('meta[name=viewport]');
-  if (vv && meta && Math.abs(vv.scale - 1) > 0.01 && !meta.content.includes('maximum-scale')) {
-    const was = meta.content;
-    meta.content = `${was}, maximum-scale=1`; // resets the zoom; put back right after so pinch-zoom still works
-    setTimeout(() => { meta.content = was; }, 100);
-  }
+  resetZoom();
 }
 let turnTimers = [];
 const onTurn = () => { turnTimers.forEach(clearTimeout); turnTimers = [300, 900].map((ms) => setTimeout(settleAfterTurn, ms)); };
