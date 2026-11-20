@@ -57,9 +57,15 @@ export function bindClosedSharing(root, ownTracksSheet) {
   root.querySelector('[data-android-setup]')?.addEventListener('click', connecting);
 }
 // Connecting the app means you want to share: switch sharing on too, or the app would sit paused
-function connecting(e) {
+// TA-4: wait for the server to have it before opening the app. Otherwise the app's first report
+// could arrive first, hear "sharing is off", and pause.
+async function connecting(e) {
   if (!state.me?.owntracksToken) { e.preventDefault(); toast('Your account has no location token yet. Open “Use OwnTracks instead” and tap “Make a new token”, then try again.'); return; }
-  if (!state.me.shareLocation) op('loc.share', { on: true });
+  if (state.me.shareLocation) return; // the link opens the app as it is
+  e.preventDefault();
+  const href = e.currentTarget.href;
+  await Promise.race([op('loc.share', { on: true }), new Promise((r) => setTimeout(r, 2500))]);
+  location.href = href;
 }
 
 // ---------- the download sheet ----------
