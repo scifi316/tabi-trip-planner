@@ -101,3 +101,45 @@ export function rowItems(list, { key = (e) => e.id, html, fresh = () => false, e
 export function optionsHtml(values, selected, { allLabel, esc }) {
   return `<option value="">${esc(allLabel)}</option>${values.map((v) => `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(v)}</option>`).join('')}`;
 }
+
+// Keep what you're looking at in the same place on screen while parts above it are redrawn
+// (1.8.9: the Accounts panel jumped whenever the Failover panel above it changed height).
+// `els` are the tab's fixed blocks in page order. The anchor is the first one that starts on screen
+// (or, when one tall block fills the screen, the one you're inside), and it stays where it was.
+// Measured as a relative move, so a browser that already did the same correction isn't doubled.
+export function keepPageStill(win, els, mutate) {
+  if (!win || !els?.length) return mutate();
+  const rects = els.map((el) => el.getBoundingClientRect());
+  let i = rects.findIndex((r) => r.top >= 0 && r.top < (win.innerHeight || Infinity));
+  if (i < 0) i = rects.findIndex((r) => r.bottom > 0);
+  if (i < 0) return mutate();
+  const before = rects[i].top;
+  const out = mutate();
+  const shift = els[i].getBoundingClientRect().top - before;
+  if (Math.abs(shift) >= 1) win.scrollBy(0, shift);
+  return out;
+}
+
+// A redrawn part may grow but never shrinks while the tab is open, so a line that comes and goes
+// (an error badge, a "last delivered" note) can't make everything below it bounce every 10 seconds.
+export function holdHeight(el) {
+  if (!el) return;
+  const h = el.offsetHeight;
+  if (h > (el._heldHeight || 0)) { el._heldHeight = h; el.style.minHeight = `${h}px`; }
+}
+export function releaseHeight(el) {
+  if (!el) return;
+  el._heldHeight = 0;
+  el.style.minHeight = '';
+}
+
+// "Last seen" in whole minutes, so a row only changes when there's something new to say.
+export function seenAgo(ts, now = Date.now()) {
+  if (!ts) return '–';
+  const m = Math.floor((now - ts) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
