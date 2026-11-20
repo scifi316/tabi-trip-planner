@@ -2,7 +2,7 @@
 // TA-7: each tab builds its controls once ("mount") and live data only redraws the parts that changed
 // ("update"), so typing, dropdowns, scrolling and taps aren't interrupted while events stream in.
 import { esc } from './ui.js';
-import { affectsTab, patchHtml, patchList, rowItems, keepScroll, createThrottle, optionsHtml } from './devview.js';
+import { affectsTab, patchHtml, patchList, rowItems, keepScroll, createThrottle, optionsHtml, keepPageStill, holdHeight, releaseHeight, seenAgo } from './devview.js';
 
 const $ = (s) => document.querySelector(s);
 const TABS = [
@@ -42,8 +42,8 @@ const RESULT = {
 const resultBadge = (r) => { const [cls, label] = RESULT[r] || (String(r).startsWith('ignored-') ? ['', `Ignored: ${String(r).slice(8)} message`] : ['', r]); return `<span class="badge ${cls}">${esc(label)}</span>`; };
 // Table rows and log lines are updated one by one (see patchList): unchanged ones are left alone.
 const parseEl = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
-const patchRows = (box, list, html, empty, { key, cols } = {}) => patchList(box, rowItems(list, {
-  key, html, fresh: (e) => freshIds.has(e.id),
+const patchRows = (box, list, html, empty, { key, cols, fresh = (e) => freshIds.has(e.id) } = {}) => patchList(box, rowItems(list, {
+  key, html, fresh,
   empty: cols ? `<tr class="empty-row"><td colspan="${cols}">${empty}</td></tr>` : empty,
 }), parseEl);
 // A dropdown's options are only redrawn while it's closed: replacing them under an open picker shuts it.
@@ -159,9 +159,16 @@ function updateView() {
     mounted = tab;
     V.mount(view);
   }
-  V.update(view);
+  // The tab's fixed blocks, in page order: whichever is on screen stays put while the rest redraw.
+  const blocks = [...view.children].flatMap((el) => el.classList.contains('grid') ? [...el.children] : [el]);
+  keepPageStill(window, blocks, () => V.update(view));
   freshIds = new Set();
 }
+// After the window changes size, held heights start over from the new layout.
+window.addEventListener('resize', () => {
+  document.querySelectorAll('#view [data-hold]').forEach(releaseHeight);
+  scheduleRender(true);
+});
 
 // Every server's version, from what each one last wrote to storage. A backup that's behind serves
 // the old app whenever it takes over (during a deploy, for example).
@@ -179,25 +186,26 @@ function serversHtml(h, version) {
 }
 
 // ----- Overview -----
-// The stat panels and the connected list refresh every 10 seconds. Accounts and Expenses have buttons
-// and a text box, so they're only redrawn when the tab opens or after you use them.
+// The stat panels, Accounts and the connected list refresh every 10 seconds, each only where something
+// changed (Accounts row by row). Expenses has buttons and a text box, so it's only redrawn when the tab
+// opens or after you use it.
 let tileCount = null;
 const overviewView = {
   mount(v) {
     v.innerHTML = `
       <div class="grid">
-        <section class="panel"><h3>Server</h3><div id="ov-server"></div></section>
-        <section class="panel"><h3>Failover</h3><div id="ov-failover"></div></section>
-        <section class="panel"><h3>Data</h3><div id="ov-data"></div></section>
-        <section class="panel"><h3>Settings</h3><div id="ov-settings"></div></section>
-        <section class="panel wide"><h3>Map</h3><div id="ov-map"></div>
+        <section class="panel"><h3>Server</h3><div id="ov-server" data-hold></div></section>
+        <section class="panel"><h3>Failover</h3><div id="ov-failover" data-hold></div></section>
+        <section class="panel"><h3>Data</h3><div id="ov-data" data-hold></div></section>
+        <section class="panel"><h3>Settings</h3><div id="ov-settings" data-hold></div></section>
+        <section class="panel wide"><h3>Map</h3><div id="ov-map" data-hold></div>
           <button class="btn small" id="test-style" style="margin-top:10px">Test map style from this browser</button> <span class="hint" id="style-result"></span></section>
         <section class="panel wide" id="acct-panel"><h3>Accounts</h3><p class="hint">Loading…</p></section>
         <section class="panel wide" id="exp-panel"><h3>Expenses</h3><p class="hint">Loading…</p></section>
       </div>
       <div id="ov-clients"></div>`;
     renderExpensePanel();
-    renderAccountsPanel();
+    mountAccounts();
     if (tileCount == null) {
       Promise.resolve(globalThis.caches?.open('tabi-map-v1')).then((cch) => cch ? cch.keys() : Promise.reject())
         .then((k) => { tileCount = String(k.length); }).catch(() => { tileCount = 'not available'; })
@@ -247,6 +255,9 @@ const overviewView = {
     patchHtml($('#ov-map'), kv([
       ['Light style', `<span class="mono">${esc(o.config.styleLight)}</span>`], ['Dark style', `<span class="mono">${esc(o.config.styleDark)}</span>`],
       ['Offline download limit', `${o.config.offlineTileLimit} tiles per press`], ['Map files cached in this browser', esc(tileCount ?? '…')]]));
+    // The stat panels sit above Accounts: they may grow but don't shrink back while you're here.
+    document.querySelectorAll('#view [data-hold]').forEach(holdHeight);
+    updateAccounts();
     patchHtml($('#ov-clients'), `
       <h3 style="margin:20px 0 8px;font-size:14px;color:var(--ink-2)">Connected right now (${o.clients.length})</h3>
       <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Connected</th><th>App build</th><th>IP</th><th>Device</th></tr></thead><tbody>
@@ -256,34 +267,43 @@ const overviewView = {
 };
 
 // Accounts: who's who, whether they can recover a forgotten password, and one-time reset links.
+// The table is built once; each 10-second refresh only replaces the rows of people whose details
+// changed, so a reset link button or link box isn't swapped out while you're using it.
 const resetLinks = {}; // user id -> url made in this console session
-async function renderAccountsPanel() {
-  if (!$('#acct-panel')) return;
-  try { await refreshPeople(); } catch (e) { const el = $('#acct-panel'); if (el) el.innerHTML = `<h3>Accounts</h3><p class="hint">${esc(e.message)}</p>`; return; }
+function mountAccounts() {
   const el = $('#acct-panel');
-  if (!el) return; // left the Overview tab while loading
+  if (!el) return;
   el.innerHTML = `<h3>Accounts</h3>
-    <p class="hint" style="margin-top:0">Former members can’t sign in, but their expenses still count. A reset link lets someone set a new password once, within 24 hours, and signs them out everywhere else.${resetLinksOn ? '' : ' Reset links are off: set DEV_RESET_LINKS=on in .env and restart to make one, then turn it off again.'}</p>
-    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead><tbody>
-    ${people.map((p) => `<tr>
-      <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
-      <td>${p.removedAt ? `<span class="badge">former member</span><div class="hint">since ${fmtDateTime(p.removedAt)}</div>` : p.admin ? '<span class="badge good">admin</span>' : 'member'}${!p.hasPassword ? '<div class="hint">no password yet</div>' : ''}</td>
-      <td>${({ saved: '<span class="badge good">saved</span>', pending: '<span class="badge warn">made, not saved yet</span>', unconfirmed: '<span class="badge">made (before 1.6), not confirmed</span>' })[p.recoveryStatus] || (p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>')}</td>
-      <td class="num">${p.sessions?.n || 0}</td>
-      <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? ago(p.sessions.last) : '–'}</td>
-      <td>${p.removedAt || (!resetLinksOn && !resetLinks[p.id]) ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
-        : `<button class="btn small" data-reset-link="${p.id}">${p.resetLink ? 'New reset link' : 'Reset link'}</button>${p.resetLink ? `<div class="hint">a link is live until ${fmtTime(p.resetLink.expires_at)}</div>` : ''}`}</td></tr>`).join('')}
-    </tbody></table></div>`;
-  el.querySelectorAll('[data-reset-link]').forEach((b) => b.onclick = async () => {
+    <p class="hint" style="margin-top:0" id="acct-hint"></p>
+    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead>
+    <tbody id="acct-body"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody></table></div>`;
+  $('#acct-body').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-reset-link]');
+    if (!b || b.disabled) return;
     b.disabled = true;
     try {
       const r = await fetch('/api/dev/reset-link', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId: +b.dataset.resetLink }) });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error);
       resetLinks[b.dataset.resetLink] = `${location.origin}/?${j.gate ? `gate=${j.gate}&` : ''}reset=${j.token}`;
-    } catch (e) { b.disabled = false; b.textContent = e.message; return; }
-    renderAccountsPanel();
+    } catch (err) { b.disabled = false; b.textContent = err.message; return; }
+    await refreshPeople().catch(() => {});
+    updateAccounts();
   });
+  refreshPeople().then(updateAccounts).catch((err) => patchRows($('#acct-body'), [], null, esc(err.message), { cols: 6 }));
+}
+function updateAccounts() {
+  if (!$('#acct-body') || !people.length) return;
+  patchHtml($('#acct-hint'), `Former members can’t sign in, but their expenses still count. A reset link lets someone set a new password once, within 24 hours, and signs them out everywhere else.${resetLinksOn ? '' : ' Reset links are off: set DEV_RESET_LINKS=on in .env and restart to make one, then turn it off again.'}`);
+  patchRows($('#acct-body'), people, (p) => `<tr>
+      <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
+      <td>${p.removedAt ? `<span class="badge">former member</span><div class="hint">since ${fmtDateTime(p.removedAt)}</div>` : p.admin ? '<span class="badge good">admin</span>' : 'member'}${!p.hasPassword ? '<div class="hint">no password yet</div>' : ''}</td>
+      <td>${({ saved: '<span class="badge good">saved</span>', pending: '<span class="badge warn">made, not saved yet</span>', unconfirmed: '<span class="badge">made (before 1.6), not confirmed</span>' })[p.recoveryStatus] || (p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>')}</td>
+      <td class="num">${p.sessions?.n || 0}</td>
+      <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? seenAgo(p.sessions.last) : '–'}</td>
+      <td>${p.removedAt || (!resetLinksOn && !resetLinks[p.id]) ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
+        : `<button class="btn small" data-reset-link="${p.id}">${p.resetLink ? 'New reset link' : 'Reset link'}</button>${p.resetLink ? `<div class="hint">a link is live until ${fmtTime(p.resetLink.expires_at)}</div>` : ''}`}</td></tr>`,
+    'Nobody on the trip yet', { cols: 6, key: (p) => p.id, fresh: () => false });
 }
 
 // The console's only write action: clear all expenses (typed confirmation), and undo the last clear.
@@ -574,7 +594,10 @@ const VIEWS = { overview: overviewView, locations: locationsView, owntracks: own
     render();
     connectStream();
     // Overview figures every 10 seconds, only while the page is in view.
-    setInterval(() => { if (!document.hidden) refreshOverview().then(() => tab === 'overview' && scheduleRender(true)).catch(() => {}); }, 10000);
+    setInterval(() => {
+      if (document.hidden) return;
+      Promise.all([refreshOverview(), tab === 'overview' ? refreshPeople() : null]).then(() => tab === 'overview' && scheduleRender(true)).catch(() => {});
+    }, 10000);
     // Keep "ago" times fresh on the tabs that show them.
     setInterval(() => { if (tab === 'locations' || tab === 'owntracks') scheduleRender(true); }, 15000);
   } catch (e) {
