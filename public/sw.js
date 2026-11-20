@@ -7,6 +7,7 @@ const SHELL = [
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/cluster-motion.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/sheetdrag.js',
+  '/js/navbar.js',
   '/js/zoomlock.js', '/js/photozoom.js',
   '/changelog.json', '/js/changelog.js', '/js/whatsnew.js',
   '/js/devview.js',
