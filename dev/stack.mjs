@@ -4,6 +4,7 @@
 //                                                        ├─ primary (:8101)   ┐ same server code as
 //                                                        └─ backup  (:8102)   ┘ production, HA on
 //                                         both share ─▶ s3 (stand-in for R2, :9000): lease, snapshots, photos
+//                                                    └▶ cold (stand-in for Backblaze B2, :9002): older files, long-term snapshots
 //
 // Like production, a node that loses the lease exits and is started again as standby (Docker's
 // "restart: always"), the primary takes back over from the backup, and data lives in "R2".
@@ -12,6 +13,7 @@
 //   node dev/stack.mjs --fresh      start from nothing
 //   node dev/stack.mjs --seed       add a demo trip once it's up (see dev/seed.mjs)
 //   node dev/stack.mjs --single     one node, no failover (the simple hosting setup)
+//   node dev/stack.mjs --no-cold    no cold store (R2 only, like before tiered storage)
 //   node dev/stack.mjs --src DIR    run the code in DIR (a pull request's checkout, see dev/pr.mjs)
 //   node dev/stack.mjs --prod-timings   production's lease timings (failover takes ~45 s instead of ~10 s)
 //   node dev/stack.mjs --phone      also open a temporary public https address for phones (needs cloudflared)
@@ -33,6 +35,8 @@ const SRC = path.resolve(arg('src', REPO));
 const DATA = path.resolve(arg('data', process.env.TABI_DEV_DATA || path.join(DEV, '.data')));
 const EDGE_PORT = +arg('port', 8080);
 const S3_PORT = +arg('s3-port', 9000);
+const COLD_PORT = +arg('cold-port', 9002);
+const COLD = !has('no-cold');
 const SINGLE = has('single');
 
 // dev/.env: KEY=value lines, like production's .env
@@ -50,15 +54,18 @@ fs.mkdirSync(DATA, { recursive: true });
 if (!fs.existsSync(path.join(SRC, 'server/index.js'))) { console.error(`[stack] ${SRC} doesn't look like Tabi (no server/index.js)`); process.exit(1); }
 if (!fs.existsSync(path.join(SRC, 'node_modules')) && !fs.existsSync(path.join(REPO, 'node_modules'))) { console.error('[stack] run "npm install" first'); process.exit(1); }
 
-const COLORS = { s3: 90, primary: 36, backup: 35, edge: 33, tunnel: 32, seed: 32, stack: 1 };
+const COLORS = { s3: 90, cold: 34, primary: 36, backup: 35, edge: 33, tunnel: 32, seed: 32, stack: 1 };
 const say = (who, line) => process.stdout.write(`\x1b[${COLORS[who] || 0}m${who.padEnd(7)}\x1b[0m ${line}\n`);
 
 // Faster than production so a failover drill takes seconds, not a minute; --prod-timings for the real ones
 const timings = has('prod-timings') ? {} : {
   HA_LEASE_TTL_MS: '8000', HA_RENEW_MS: '2000', HA_GRACE_MS: '3000', HA_BACKUP_EXTRA_MS: '3000', HA_FAILBACK_MS: '20000', HA_SNAPSHOT_MS: '5000',
 };
+// Storage upkeep runs sooner and more often than production's (1 min, then every 10) so you can watch it
+const storage = { STORAGE_UPKEEP_FIRST_MS: '10000', STORAGE_UPKEEP_MS: '60000' };
+const coldEnv = COLD ? { COLD_S3_ENDPOINT: `http://localhost:${COLD_PORT}`, COLD_S3_BUCKET: 'tabi-dev-cold', COLD_S3_ACCESS_KEY_ID: 'dev', COLD_S3_SECRET_ACCESS_KEY: 'dev' } : {};
 const nodeEnv = (name, port, priority) => ({
-  ...process.env, ...fileEnv,
+  ...process.env, ...storage, ...fileEnv, ...coldEnv,
   PORT: String(port), DATA_DIR: path.join(DATA, name), TRUST_PROXY: 'true',
   HA_MODE: SINGLE ? 'off' : 'on', HA_NODE: name, HA_PRIORITY: priority,
   S3_ENDPOINT: `http://localhost:${S3_PORT}`, S3_BUCKET: 'tabi-dev', S3_ACCESS_KEY_ID: 'dev', S3_SECRET_ACCESS_KEY: 'dev',
@@ -90,6 +97,7 @@ const startPrimary = () => run('primary', NODE_ARGS, nodeEnv('primary', 8101, 'p
 const startBackup = () => run('backup', NODE_ARGS, nodeEnv('backup', 8102, 'backup'), { restart: startBackup });
 
 run('s3', [path.join(DEV, 's3.mjs'), '--port', String(S3_PORT), '--dir', path.join(DATA, 's3')], process.env, { cwd: REPO });
+if (COLD) run('cold', [path.join(DEV, 's3.mjs'), '--port', String(COLD_PORT), '--dir', path.join(DATA, 's3-cold')], process.env, { cwd: REPO });
 await new Promise((r) => setTimeout(r, 400));
 startPrimary();
 if (!SINGLE) setTimeout(startBackup, 1500); // like production: the backup starts as standby
@@ -106,8 +114,8 @@ async function waitForLeader() {
 }
 const serving = await waitForLeader();
 say('stack', serving ? `\x1b[1mTabi dev is up: ${URL0}${KEY ? `/?key=${KEY}` : ''}\x1b[0m (served by ${serving})` : 'no node took the lead after 90 s: see the messages above');
-say('stack', `which node is serving: ${URL0}/__edge   ·   what's in "R2": http://localhost:${S3_PORT}/__list`);
-if (!SINGLE) say('stack', 'type k + Enter to kill the primary (failover drill), s to start it again, d/u to take R2 down/up, q to quit');
+say('stack', `which node is serving: ${URL0}/__edge   ·   what's in "R2": http://localhost:${S3_PORT}/__list${COLD ? `   ·   in "B2": http://localhost:${COLD_PORT}/__list` : ''}`);
+if (!SINGLE) say('stack', 'type k + Enter to kill the primary (failover drill), s to start it again, d/u to take R2 down/up, cd/cu for the cold store, q to quit');
 
 if (has('seed') && serving) {
   run('seed', [path.join(DEV, 'seed.mjs'), URL0], { ...process.env, ...fileEnv }, { cwd: REPO });
@@ -140,6 +148,8 @@ const control = async (c) => {
   else if (c === 's') { held.delete('primary'); if (!procs.primary) { startPrimary(); say('stack', 'started the primary: it takes back over after the failback delay'); } }
   else if (c === 'd') await fetch(`http://localhost:${S3_PORT}/__down`).catch(() => {});
   else if (c === 'u') await fetch(`http://localhost:${S3_PORT}/__up`).catch(() => {});
+  else if (c === 'cd') await fetch(`http://localhost:${COLD_PORT}/__down`).catch(() => {});
+  else if (c === 'cu') await fetch(`http://localhost:${COLD_PORT}/__up`).catch(() => {});
   else if (c === 'q') stopAll();
 };
 if (process.stdin.isTTY) readline.createInterface({ input: process.stdin }).on('line', (l) => control(l.trim().toLowerCase()));

@@ -27,6 +27,20 @@ export function s3FromEnv(env = process.env) {
   return new S3({ ...env, S3_ENDPOINT: ep.endpoint, S3_BUCKET: bucket, S3_ACCESS_KEY_ID: clean(env.S3_ACCESS_KEY_ID), S3_SECRET_ACCESS_KEY: clean(env.S3_SECRET_ACCESS_KEY) });
 }
 
+// The second, colder store (Backblaze B2, or any S3-compatible service): COLD_S3_* settings, same
+// meaning as S3_*. Old full-size pictures and old backups move there; everything is copied there.
+export function coldFromEnv(env = process.env) {
+  const ep = clean(env.COLD_S3_ENDPOINT);
+  if (!ep) return null;
+  // Backblaze signs with the region in its address (s3.us-west-004.backblazeb2.com)
+  const region = clean(env.COLD_S3_REGION) || /s3\.([a-z0-9-]+)\.backblazeb2\.com/i.exec(ep)?.[1] || 'auto';
+  const store = s3FromEnv({ S3_ENDPOINT: ep, S3_BUCKET: env.COLD_S3_BUCKET, S3_ACCESS_KEY_ID: env.COLD_S3_ACCESS_KEY_ID,
+    S3_SECRET_ACCESS_KEY: env.COLD_S3_SECRET_ACCESS_KEY, S3_REGION: region, S3_PREFIX: env.COLD_S3_PREFIX ?? env.S3_PREFIX });
+  if (!store) throw new Error('COLD_S3_ENDPOINT is set, but COLD_S3_BUCKET, COLD_S3_ACCESS_KEY_ID and COLD_S3_SECRET_ACCESS_KEY are not all set.');
+  store.name = /backblazeb2/i.test(ep) ? 'B2' : 'cold storage';
+  return store;
+}
+
 export class S3 {
   constructor(env) {
     this.base = `${env.S3_ENDPOINT.replace(/\/+$/, '')}/${env.S3_BUCKET}`;
@@ -80,7 +94,27 @@ export class S3 {
     const r = await this.req('DELETE', key);
     if (!r.ok && r.status !== 404) throw new Error(`S3 DELETE ${key}: ${r.status}`);
   }
+
+  // Every object whose key starts with prefix: [{ key, size }] (ListObjectsV2, page by page)
+  async list(prefix, { timeout = 30000 } = {}) {
+    const out = [];
+    let token = null;
+    do {
+      const q = new URLSearchParams({ 'list-type': '2', prefix: this.prefix + prefix, ...(token ? { 'continuation-token': token } : {}) });
+      const r = await this.client.fetch(`${this.base}?${q}`, { headers: { 'accept-encoding': 'identity' }, signal: AbortSignal.timeout(timeout) });
+      if (!r.ok) throw new Error(`S3 LIST ${prefix}: ${r.status}`);
+      const xml = await r.text();
+      for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+        const key = unxml(/<Key>([\s\S]*?)<\/Key>/.exec(m[1])?.[1] || '');
+        if (key.startsWith(this.prefix)) out.push({ key: key.slice(this.prefix.length), size: +(/<Size>(\d+)<\/Size>/.exec(m[1])?.[1] || 0) });
+      }
+      token = /<IsTruncated>true<\/IsTruncated>/.test(xml) ? unxml(/<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(xml)?.[1] || '') || null : null;
+    } while (token);
+    return out;
+  }
 }
+
+const unxml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
 // Cloudflare's edge marks ETags weak (W/"…") when it compresses a response, but conditional writes
 // only match the strong form. We ask for uncompressed responses and strip the W/ just in case.

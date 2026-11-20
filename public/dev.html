@@ -16,8 +16,11 @@
     })();
   </script>
   <style>
-    body { overflow: auto; }
-    .dev { max-width: 1280px; margin: 0 auto; padding: calc(var(--safe-t) + 14px) 16px 60px; }
+    /* TA-7: the page itself scrolls, as an ordinary web page. The app's styles make html and body exactly
+       one screen tall, which turned body into a separate scrolling box here: on phones that box scrolls
+       stiffly, keeps the address bar from hiding, and jumped back whenever the content was redrawn. */
+    html, body { height: auto; min-height: 100%; }
+    body { overflow: visible; }    .dev { max-width: 1280px; margin: 0 auto; padding: calc(var(--safe-t) + 14px) 16px 60px; }
     .dev-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
     .dev-head h1 { font-size: 20px; margin: 0; letter-spacing: -.01em; }
     .dev-head .grow { flex: 1; }
