@@ -5,6 +5,7 @@ import { openGroups, groupWhere } from './groups.js';
 import { openFriends, openFriend } from './friends.js';
 import { emojiHtml } from './emoji.js';
 import { dayPhotoButton, bindDayPhotoButtons } from './photos.js';
+import { dressStyle, satelliteOn, setSatellite } from './basemap.js';
 import { openStay, openStays, openStayEditor, stayFor, stayTonight } from './stays.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets, openSheet } from './ui.js';
 import { openPlace, selectedPlaceId } from './place.js';
@@ -29,7 +30,8 @@ const LAYER_KEY = 'tabi.layers';
 let visible = { confirmed: true, maybe: true, suggested: true, visited: true, missed: true, skipped: true, vetoed: false, removed: false, onlyDay: false, ...JSON.parse(localStorage.getItem(LAYER_KEY) || '{}') };
 
 export function themeStyleUrl() {
-  const dark = document.documentElement.dataset.theme === 'dark';
+  // Satellite always takes its roads and labels from the light style, which reads well on photos.
+  const dark = document.documentElement.dataset.theme === 'dark' && !satelliteOn();
   return dark ? (state.config.styleDark || 'https://tiles.openfreemap.org/styles/dark') : (state.config.styleLight || 'https://tiles.openfreemap.org/styles/liberty');
 }
 
@@ -76,7 +78,7 @@ export function initMap() {
   });
   map.touchZoomRotate.disableRotation();
   map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-left');
-  map.on('style.load', () => { applyLabelLanguage(); drawAccuracy(); ensurePlaceSource(); syncSoon(); });
+  map.on('style.load', () => { dressStyle(map, { dark: document.documentElement.dataset.theme === 'dark' }); applyLabelLanguage(); drawAccuracy(); ensurePlaceSource(); syncSoon(); });
   // Keep cluster markers in step with the map: during moves (throttled), when it settles, and when
   // the clustered source finishes updating.
   map.on('render', () => { if (performance.now() - lastSync > 90) syncClusters(); });
@@ -916,11 +918,26 @@ function setupControls() {
     e.stopPropagation();
     if (!pop.hidden) return hideLayers();
     const rows = ['confirmed', 'maybe', 'suggested', 'visited', 'missed', 'skipped', 'vetoed', ...(state.me?.isAdmin ? ['removed'] : [])];
-    pop.innerHTML = `<h4>Show on map</h4>${rows.map((s) => `
+    const sat = satelliteOn();
+    pop.innerHTML = `<h4>Map</h4><div class="seg" role="group" style="margin:0 4px 4px">
+        <button data-basemap="map" aria-pressed="${!sat}">Map</button><button data-basemap="satellite" aria-pressed="${sat}">Satellite</button></div>
+      ${sat ? '<div class="help" style="margin:2px 8px 6px">Photos need a connection: they aren\'t saved for offline use.</div>' : ''}
+      <h4 style="margin-top:10px">Show on map</h4>${rows.map((s) => `
       <label class="check-row"><input type="checkbox" data-s="${s}" ${visible[s] ? 'checked' : ''}><span class="place-dot" style="--dot:${STATUS[s].color};width:12px;height:12px;border-width:2px"></span>${STATUS[s].label}</label>`).join('')}
       <label class="check-row" style="border-top:1px solid var(--line);margin-top:4px;padding-top:10px"><input type="checkbox" data-s="onlyDay" ${visible.onlyDay ? 'checked' : ''}>Only the selected day</label>`;
     pop.hidden = false;
     $('#ctl-layers').setAttribute('aria-expanded', 'true');
+    pop.querySelectorAll('[data-basemap]').forEach((b) => b.onclick = (ev) => {
+      ev.stopPropagation();
+      const on = b.dataset.basemap === 'satellite';
+      if (on === satelliteOn()) return;
+      setSatellite(on);
+      styleUrl = themeStyleUrl();
+      usingFallback = false;
+      map.setStyle(styleUrl, { diff: false });
+      hideLayers();
+      $('#ctl-layers').click();
+    });
     pop.querySelectorAll('[data-s]').forEach((c) => c.onchange = () => {
       visible[c.dataset.s] = c.checked;
       localStorage.setItem(LAYER_KEY, JSON.stringify(visible));
