@@ -1,0 +1,39 @@
+# Checks every pull request: the unit tests, then the dev stack (two nodes, the stand-ins for
+# Cloudflare and R2, a demo trip) with a failover drill through it. See docs/DEVELOPMENT.md.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Dev stack and failover drill
+        run: |
+          node dev/stack.mjs --fresh --seed > stack.log 2>&1 &
+          for i in $(seq 1 90); do grep -q "Demo trip ready" stack.log && break; sleep 1; done
+          grep -q "Demo trip ready" stack.log || { echo "The dev stack didn't come up with the demo trip"; exit 1; }
+          curl -sf http://localhost:8080/api/status
+          node dev/failover.mjs
+      - name: Dev stack log
+        if: always()
+        run: '[ -f stack.log ] && sed "s/\x1b\[[0-9;]*m//g" stack.log | tail -n 200 || true'
