@@ -4,20 +4,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { photoZoom, clampView, zoomAround, MAX_ZOOM } from '../public/js/photozoom.js';
+import { photoZoom, clampView, zoomAround, fittedSize, MAX_ZOOM } from '../public/js/photozoom.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 // A 400 x 800 stage at the top-left of the screen, holding the blurred thumbnail and the photo.
-function fakeStage() {
+// With no photo size given, the photo hasn't loaded yet and fills the stage.
+function fakeStage(photo = {}) {
   const listeners = {};
-  const imgs = [{ style: {} }, { style: {} }];
+  const imgs = [{ style: {} }, { style: {}, naturalWidth: photo.w, naturalHeight: photo.h }];
   const classes = new Set();
   const stage = {
     addEventListener: (type, fn) => { listeners[type] = fn; },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }),
     querySelectorAll: () => imgs,
+    querySelector: (sel) => (sel === '.pv-img' ? imgs[1] : null),
     setPointerCapture() {},
     classList: { toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)) },
   };
@@ -51,6 +53,35 @@ test('zooming keeps the point under the fingers still and stays in range', () =>
 test("the photo can't be dragged off the screen", () => {
   assert.deepEqual(clampView({ z: 2, x: 999, y: -999 }, 400, 800), { z: 2, x: 200, y: -400 });
   assert.deepEqual(clampView({ z: 1, x: 50, y: 50 }, 400, 800), { z: 1, x: 0, y: 0 });
+});
+
+test('a photo is drawn at its own shape inside the stage', () => {
+  assert.deepEqual(fittedSize(400, 800, 4000, 3000), { iw: 400, ih: 300 }); // landscape photo, portrait phone
+  assert.deepEqual(fittedSize(800, 400, 3000, 4000), { iw: 300, ih: 400 }); // portrait photo, landscape phone
+  assert.deepEqual(fittedSize(400, 800, 0, 0), { iw: 400, ih: 800 }); // not loaded yet
+});
+
+test('a landscape photo on a portrait phone can only be dragged as far as its own edges', () => {
+  // drawn 400 x 300 in a 400 x 800 stage: at 2x it's 800 x 600, wider than the stage but not taller
+  assert.deepEqual(clampView({ z: 2, x: 999, y: 999 }, 400, 800, 400, 300), { z: 2, x: 200, y: 0 });
+  // at 3x it's 900 tall, 50px taller than the stage either way
+  assert.deepEqual(clampView({ z: 3, x: -999, y: -999 }, 400, 800, 400, 300), { z: 3, x: -400, y: -50 });
+});
+
+test('a portrait photo on a landscape phone can only be dragged as far as its own edges', () => {
+  // drawn 300 x 400 in an 800 x 400 stage: at 2x it's 600 x 800, taller than the stage but not wider
+  assert.deepEqual(clampView({ z: 2, x: 999, y: 999 }, 800, 400, 300, 400), { z: 2, x: 0, y: 200 });
+  assert.deepEqual(clampView({ z: 3, x: -999, y: 0 }, 800, 400, 300, 400), { z: 3, x: -50, y: 0 });
+});
+
+test('dragging a zoomed landscape photo up or down keeps it on screen', () => {
+  const f = fakeStage({ w: 4000, h: 3000 });
+  const pz = photoZoom(f.stage);
+  f.pinch(100, 200); // 2x: 800 x 600 in a 400 x 800 stage
+  f.drag(200, 400, 260, 100);
+  assert.deepEqual(pz.view, { z: 2, x: 60, y: 0 }, 'moves sideways, not out of view vertically');
+  f.drag(200, 400, 900, 400);
+  assert.equal(pz.view.x, 200, 'stops at the photo\'s left edge');
 });
 
 test('pinching out zooms the photo in, and pinching back in returns it to normal', () => {
