@@ -275,10 +275,14 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
   padding: 10px 6px 12px; transition: bottom .3s var(--ease);
 }
 .app.nav-collapsed .line-strip { bottom: calc(var(--safe-b) + 58px); }
-.strip-head { display: flex; align-items: center; gap: 4px; padding: 0 4px; }
+.strip-head { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
 .strip-day { flex: 1; min-width: 0; text-align: left; border: 0; background: none; padding: 2px 4px; }
+/* "Today" and "Day 4" sit on one line when there's room, and "Day 4" moves under it as a whole when there isn't,
+   instead of running on under the group chip next to it. Each is cut with … only if even that won't fit. */
+.strip-day { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; line-height: 1.2; min-width: min-content; }
+.strip-day b, .strip-day span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .strip-day b { font-size: 15px; }
-.strip-day span { color: var(--ink-2); font-size: 13px; margin-left: 6px; }
+.strip-day span { color: var(--ink-2); font-size: 13px; }
 .strip-left { font-size: 13px; color: var(--ink-2); white-space: nowrap; padding-right: 4px; }
 .strip-left b { color: var(--ink); font-size: 15px; }
 .icon-btn {
@@ -288,7 +292,9 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
 .icon-btn.small { width: 30px; height: 30px; }
 .icon-btn:disabled { opacity: .3; pointer-events: none; }
 
-.rail { position: relative; margin: 10px 8px 0; height: 40px; overflow-x: auto; overflow-y: visible; scrollbar-width: none; }
+/* TA-10: the rail is a scroll box, so it clips. Its padding leaves room for the first and last stop and the next
+   stop's breathing ring, instead of cutting them at its edges. */
+.rail { position: relative; margin: 4px 0 0; padding: 6px 12px; height: 52px; scroll-padding-inline: 12px; overflow-x: auto; overflow-y: visible; scrollbar-width: none; }
 .rail::-webkit-scrollbar { display: none; }
 .rail-inner { position: relative; height: 100%; display: flex; align-items: center; justify-content: space-between; min-width: 100%; }
 .rail-track { position: absolute; left: 14px; right: 14px; top: 50%; height: 6px; margin-top: -3px; border-radius: 3px; background: var(--surface-3); }
@@ -436,7 +442,8 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
 .row .help { font-size: 13px; color: var(--ink-2); margin-top: 1px; }
 .row.stack { flex-direction: column; align-items: stretch; }
 .seg { display: flex; padding: 3px; gap: 2px; border-radius: 12px; background: var(--surface-2); }
-.seg button { flex: 1; border: 0; background: none; height: 34px; border-radius: 9px; font-size: 13.5px; font-weight: 600; color: var(--ink-2); padding: 0 10px; white-space: nowrap; }
+/* A label that doesn't fit its share wraps onto two lines instead of being cut off (Settings > Vetoes on a small phone) */
+.seg button { flex: 1; min-width: 0; border: 0; background: none; height: auto; min-height: 34px; border-radius: 9px; font-size: 13.5px; font-weight: 600; line-height: 1.2; color: var(--ink-2); padding: 6px 10px; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
 [data-theme="dark"] .seg button[aria-pressed="true"] { background: var(--surface-3); }
 
@@ -493,6 +500,8 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.4; }
 .sheet-head .grow { flex: 1; min-width: 0; padding-top: 2px; }
 .sheet-head .sub { font-size: 13.5px; color: var(--ink-2); margin-top: 3px; }
 .sheet-body { flex: 1; overflow-y: auto; padding: 0 18px 18px; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+/* A sheet never scrolls sideways, even if something in it is too wide (TA-10: the Friends sheet did on small phones) */
+.sheet-body { overflow-x: hidden; }
 .sheet-foot { flex: none; padding: 10px 18px 12px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
 .sheet-foot .btn { flex: 1; }
 @media (min-width: 900px) {
@@ -531,6 +540,10 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.4; }
 .meta-foot { font-size: 12.5px; color: var(--ink-3); display: flex; align-items: center; gap: 8px; justify-content: space-between; flex-wrap: wrap; }
 
 .tabs-mini { display: flex; gap: 4px; margin: 0 0 14px; overflow-x: auto; scrollbar-width: none; }
+/* TA-10: in a sheet the row runs to the sheet's edges instead of stopping at its padding, where the last tab was cut
+   off, and keeps the same margin at both ends. The spacer keeps the end margin in Safari, which drops end padding. */
+.sheet-body .tabs-mini { margin-inline: -18px; padding-inline: 18px; scroll-padding-inline: 18px; }
+.sheet-body .tabs-mini::after { content: ""; flex: none; width: 1px; }
 .tabs-mini button { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 18px; border: 1px solid var(--line); background: none; font-weight: 600; font-size: 13.5px; color: var(--ink-2); }
 .tabs-mini button[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .tabs-mini .i { width: 17px; height: 17px; }
@@ -783,7 +796,10 @@ label.btn { cursor: pointer; }
 .btn-pair { display: flex; gap: 6px; flex: none; }
 
 /* ---------- emoji reactions ---------- */
-.friends-actions { grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); margin: 0 0 12px; }
+/* TA-9: the two buttons sit side by side when both labels fit, and each takes its own row when they don't, so
+   "Show everyone on the map" is never cut off. A label wraps only if it won't fit a whole row (very large text). */
+.friends-actions { display: flex; flex-wrap: wrap; margin: 0 0 12px; }
+.friends-actions .btn { flex: 1 1 auto; min-width: 0; height: auto; min-height: 46px; padding-block: 8px; white-space: normal; text-align: center; line-height: 1.2; }
 .react-e { font-size: 1.15em; line-height: 1; font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", var(--font); }
 .btn .react-e { font-size: 18px; }
 .react-row { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; }
