@@ -7,7 +7,7 @@ const SHELL = [
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
-  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js', '/js/chat.js', '/js/android.js',
+  '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js', '/js/chat.js', '/js/android.js', '/js/basemap.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
   '/vendor/maplibre-gl/maplibre-gl-worker.mjs',
   '/vendor/fflate/browser.js',
@@ -61,6 +61,8 @@ self.addEventListener('fetch', (e) => {
 
   // GIFs from KLIPY load straight from KLIPY every time: its terms don't allow keeping copies.
   if (/(^|\.)klipy\.com$/.test(url.hostname)) return;
+  // Satellite photos (GSI, Japan) also load live: GSI's terms cover live use, not keeping copies.
+  if (url.hostname === 'cyberjapandata.gsi.go.jp') return;
   // Other cross-origin requests from the app are map styles, tiles, sprites and fonts: cache first.
   if (url.protocol === 'https:') {
     e.respondWith((async () => {
