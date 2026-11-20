@@ -1,6 +1,6 @@
 // TA-15: on a phone Tabi should feel like an app, not a web page, so the page itself never zooms.
-// Pinching and double-tapping inside the map (and the profile photo crop) keep working: they handle
-// their own touches and never relied on the page zooming.
+// Pinching and double-tapping inside the map, the full-screen photo viewer (photozoom.js) and the
+// profile photo crop keep working: they handle their own touches rather than zooming the page.
 //
 // Each phone browser listens to a different switch, so there are three:
 //  - the viewport tag in index.html (maximum-scale=1, user-scalable=no). Chrome honours it, and the

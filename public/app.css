@@ -69,8 +69,8 @@ html, body { margin: 0; height: 100%; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 /* Nothing may make the whole page wider than the screen: on iOS that shifts the fixed layout and where taps land */
 html, body { overflow-x: clip; }
-/* TA-15: the page scrolls but never pinch- or double-tap-zooms, like an app. The map, photo crop and sheet
-   handles set their own touch-action and handle pinches themselves, so they're unaffected. */
+/* TA-15: the page scrolls but never pinch- or double-tap-zooms, like an app. The map, photo viewer, photo crop
+   and sheet handles set their own touch-action and handle pinches themselves, so they're unaffected. */
 html, body { touch-action: pan-x pan-y; }
 body {
   font-family: var(--font);
@@ -1116,8 +1116,10 @@ button.emoji-cell:hover { background: var(--surface-3); }
 .pv-top .icon-btn:hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .pv-top .grow { flex: 1; }
 .pv-count { font-size: 13px; color: #aab; }
-.pv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: pan-y; }
-.pv-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* The viewer handles pinch, double-tap and drag itself (js/photozoom.js), since the page never zooms (TA-15) */
+.pv-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.pv-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform-origin: center; }
+.pv-stage.zoomed { cursor: grab; }
 .pv-low { filter: blur(6px); opacity: .5; }
 .pv-nav { position: absolute; top: 50%; translate: 0 -50%; width: 44px; height: 44px; border-radius: 50%; border: 0; display: grid; place-items: center; background: rgba(0, 0, 0, .45); color: #fff; }
 .pv-nav.prev { left: 10px; } .pv-nav.next { right: 10px; }

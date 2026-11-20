@@ -8,6 +8,7 @@ import { reactionSet } from './reactions.js';
 import { meButton, currentTab } from './main.js';
 import { wideScreen, markRead as markNotifsRead } from './notifications.js';
 import { decodeImage, shrinkImage } from './photos.js';
+import { photoZoom } from './photozoom.js';
 
 const PAGE = 40;
 const GROUP_GAP = 5 * 60e3;   // messages closer than this from the same person share one name/avatar
@@ -539,6 +540,7 @@ function openPhoto(m) {
   const key = (e) => { if (e.key === 'Escape') close(); };
   addEventListener('keydown', key);
   el.querySelector('[data-close]').onclick = close;
+  photoZoom(el.querySelector('.pv-stage')); // pinch or double-tap to zoom
   el.focus();
 }
 
