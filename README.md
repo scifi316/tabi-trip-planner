@@ -168,6 +168,10 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 
 Updates never touch your data: the database stays on the server's disk outside the container, and new versions only ever add to it. `deploy/update.sh` also saves a copy of the database to `data/backups/` before rebuilding. Everyone stays signed in. Before each release, a database made with the previous version is upgraded and checked: the same people, places, subgroups, expenses and sessions must all come through.
 
+## Trying changes before they go live
+
+`node dev/stack.mjs --fresh --seed` runs production's setup on your own computer: both servers with failover, plus stand-ins for Cloudflare and R2, and a demo trip. `node dev/pr.mjs 15` runs pull request #15 on it. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+
 ## Future improvements
 
 Ideas, roughly in priority order:
@@ -231,6 +235,8 @@ deploy/droplet/    DigitalOcean primary (compose);  deploy/home/  home-server ba
 fly.toml           Alternative primary on Fly.io (Tokyo)
 docs/HOSTING.md    Domain, private link, DigitalOcean, home backup, failover runbook
 docs/ANDROID.md    The Android app: installing, signing, publishing updates
+docs/DEVELOPMENT.md  The dev stack: production's setup on your computer, for trying pull requests
+dev/               The dev stack's scripts (stand-ins for Cloudflare and R2, demo trip, failover drill)
 docs/FEASIBILITY.md  Group chat, Connect 4 and pool: what they'd take
 ```
 
