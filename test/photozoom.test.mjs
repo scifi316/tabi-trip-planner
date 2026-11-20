@@ -13,11 +13,13 @@ const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 // With no photo size given, the photo hasn't loaded yet and fills the stage.
 function fakeStage(photo = {}) {
   const listeners = {};
-  const imgs = [{ style: {} }, { style: {}, naturalWidth: photo.w, naturalHeight: photo.h }];
+  const imgListeners = {};
+  const rect = { left: 0, top: 0, width: 400, height: 800 };
+  const imgs = [{ style: {} }, { style: {}, naturalWidth: photo.w, naturalHeight: photo.h, addEventListener: (type, fn) => { imgListeners[type] = fn; } }];
   const classes = new Set();
   const stage = {
     addEventListener: (type, fn) => { listeners[type] = fn; },
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 800 }),
+    getBoundingClientRect: () => ({ ...rect }),
     querySelectorAll: () => imgs,
     querySelector: (sel) => (sel === '.pv-img' ? imgs[1] : null),
     setPointerCapture() {},
@@ -30,7 +32,7 @@ function fakeStage(photo = {}) {
     return e;
   };
   return {
-    stage, imgs, classes,
+    stage, imgs, classes, rect, imgListeners,
     wait: (ms) => { clock += ms; },
     tap: (x, y) => { ev('pointerdown', 1, x, y); ev('pointerup', 1, x, y); },
     drag: (x0, y0, x1, y1) => { ev('pointerdown', 1, x0, y0); ev('pointermove', 1, x1, y1); ev('pointerup', 1, x1, y1); },
@@ -82,6 +84,49 @@ test('dragging a zoomed landscape photo up or down keeps it on screen', () => {
   assert.deepEqual(pz.view, { z: 2, x: 60, y: 0 }, 'moves sideways, not out of view vertically');
   f.drag(200, 400, 900, 400);
   assert.equal(pz.view.x, 200, 'stops at the photo\'s left edge');
+});
+
+test('turning the phone while zoomed in pulls the photo back on screen', () => {
+  const observers = [];
+  globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb; observers.push(this); } observe() {} disconnect() { this.off = true; } };
+  try {
+    const f = fakeStage({ w: 3000, h: 4000 }); // a portrait photo, drawn 400 x 533 on a 400 x 800 phone
+    const pz = photoZoom(f.stage);
+    f.pinch(100, 300); // 3x: 1200 x 1600
+    f.drag(200, 400, 900, 1400);
+    assert.deepEqual(pz.view, { z: 3, x: 400, y: 400 }, 'dragged to the top-left corner');
+    // Turned sideways: the stage is 800 x 400 and the photo is drawn 300 x 400, so 900 x 1200 at 3x
+    Object.assign(f.rect, { width: 800, height: 400 });
+    observers[0].cb();
+    assert.deepEqual(pz.view, { z: 3, x: 50, y: 400 });
+    assert.equal(f.imgs[1].style.transform, 'translate(50px, 400px) scale(3)');
+    // Once the viewer is closed, it stops listening
+    f.stage.isConnected = false;
+    observers[0].cb();
+    assert.ok(observers[0].off);
+  } finally {
+    delete globalThis.ResizeObserver;
+  }
+});
+
+test('when the full photo loads and its real shape is known, a zoomed view is pulled back inside it', () => {
+  const f = fakeStage(); // not loaded yet: the photo is taken to fill the 400 x 800 stage
+  const pz = photoZoom(f.stage);
+  f.pinch(100, 200); // 2x
+  f.drag(200, 400, 200, 900);
+  assert.deepEqual(pz.view, { z: 2, x: 0, y: 400 });
+  // It loads as a landscape photo, drawn 400 x 300: 600 tall at 2x, so it fits and is centred
+  Object.assign(f.imgs[1], { naturalWidth: 4000, naturalHeight: 3000 });
+  f.imgListeners.load();
+  assert.deepEqual(pz.view, { z: 2, x: 0, y: 0 });
+});
+
+test('a view at normal size is left alone when the stage changes', () => {
+  const f = fakeStage({ w: 4000, h: 3000 });
+  const pz = photoZoom(f.stage);
+  Object.assign(f.rect, { width: 0, height: 0 });
+  pz.refit();
+  assert.deepEqual(pz.view, { z: 1, x: 0, y: 0 });
 });
 
 test('pinching out zooms the photo in, and pinching back in returns it to normal', () => {

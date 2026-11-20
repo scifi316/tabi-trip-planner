@@ -107,5 +107,20 @@ export function photoZoom(stage, { onSwipe } = {}) {
     zoomTo(t.z * Math.exp(-e.deltaY / 100), e.clientX, e.clientY);
   }, { passive: false });
 
-  return { get view() { return { ...t }; }, reset: () => set({ z: 1, x: 0, y: 0 }) };
+  // The limits depend on the stage's size and the photo's shape, so when either changes (the phone turns,
+  // the window resizes, or the full photo finishes loading and its real shape is known), pull the current
+  // view back inside the new limits.
+  const refit = () => {
+    if (t.z === 1) return;
+    const [w, h, iw, ih] = size();
+    if (w > 0 && h > 0) set(clampView(t, w, h, iw, ih));
+  };
+  stage.querySelector('.pv-img')?.addEventListener?.('load', refit);
+  const RO = globalThis.ResizeObserver;
+  if (RO) {
+    const ro = new RO(() => { if (stage.isConnected === false) ro.disconnect(); else refit(); });
+    ro.observe(stage);
+  }
+
+  return { get view() { return { ...t }; }, reset: () => set({ z: 1, x: 0, y: 0 }), refit };
 }
