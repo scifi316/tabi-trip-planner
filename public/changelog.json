@@ -1,0 +1,46 @@
+{
+  "about": "What's new in Tabi, newest first. Every release that changes package.json's version adds an entry here in the same pull request (test/changelog.test.mjs checks). Write changes for the people using the app, one short sentence each.",
+  "releases": [
+    {
+      "version": "1.8.5",
+      "date": "2026-11-20",
+      "tickets": ["TA-17"],
+      "changes": [
+        "Tabi now tells you when it has been updated, with a link to what's new.",
+        "Settings has a Changelog with the latest updates."
+      ]
+    },
+    {
+      "version": "1.8.3",
+      "date": "2026-11-20",
+      "tickets": ["TA-15"],
+      "prs": [32],
+      "changes": [
+        "On phones, the app no longer zooms like a web page when you pinch or double-tap. The map still zooms.",
+        "Pinch, double-tap and drag to zoom into trip photos and chat photos."
+      ]
+    },
+    {
+      "version": "1.8.2",
+      "date": "2026-11-20",
+      "tickets": ["TA-8"],
+      "prs": [30],
+      "changes": [
+        "Places on the map glide together when they group and spread out when they split, instead of popping."
+      ]
+    },
+    {
+      "version": "1.8.1",
+      "date": "2026-11-20",
+      "tickets": ["TA-4", "TA-11", "TA-13"],
+      "prs": [31, 15, 16, 28, 29],
+      "changes": [
+        "New Satellite view in the map layers menu, with aerial photos of Japan under the map's roads and labels.",
+        "Buildings show in 3D in dark mode too.",
+        "iPhone: turning the phone to landscape and back no longer leaves text too big or taps landing in the wrong place.",
+        "Android app: keeps sharing your location while you're standing still, and starts again as soon as you turn sharing on.",
+        "Android app: new versions of the app can install in place from Tabi."
+      ]
+    }
+  ]
+}

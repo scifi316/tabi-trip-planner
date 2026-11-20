@@ -1405,3 +1405,18 @@ a.btn { text-decoration: none; }
 }
 .android-steps .help { display: block; }
 .android-steps .btn { justify-self: start; margin-top: 4px; }
+
+/* ---------- changelog (Settings) and What's new ---------- */
+.changelog .release + .release { border-top: 1px solid var(--line); }
+.changelog .release > summary { display: flex; align-items: baseline; gap: 10px; padding: 12px 14px; min-height: 48px; cursor: pointer; list-style: none; -webkit-tap-highlight-color: transparent; }
+.changelog .release > summary::-webkit-details-marker { display: none; }
+.changelog .release > summary .label { font-weight: 600; flex: 1; }
+.changelog .release > summary .help { font-size: 13px; color: var(--ink-2); }
+.changelog .release > summary::after { content: ''; width: 8px; height: 8px; border: solid var(--ink-3); border-width: 0 2px 2px 0; transform: translateY(-2px) rotate(45deg); transition: transform .2s var(--ease); align-self: center; }
+.changelog .release[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
+.changelog .release ul { margin: -4px 0 0; padding: 0 16px 12px 32px; color: var(--ink); font-size: 14px; line-height: 1.45; }
+.changelog .release li + li { margin-top: 4px; }
+.changelog .release.older > .release { border-top: 1px solid var(--line); }
+.changelog .release.older > .release > summary { padding-left: 24px; }
+.whatsnew .changelog { margin: 0; }
+.whatsnew-more { font-size: 13px; color: var(--ink-2); margin: 12px 4px 0; }

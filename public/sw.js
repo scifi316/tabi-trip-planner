@@ -1,12 +1,13 @@
 // Service worker: app shell works offline; map assets are cache-first so saved areas
 // keep working without a connection.
-const VERSION = 'tabi-shell-v9';
+const VERSION = 'tabi-shell-v10';
 const MAP_CACHE = 'tabi-map-v1';
 const SHELL = [
   '/', '/index.html', '/app.css', '/manifest.webmanifest', '/icons/icon.svg', '/icons/icon-192.png',
   '/js/main.js', '/js/store.js', '/js/ui.js', '/js/map.js', '/js/cluster-motion.js', '/js/itinerary.js', '/js/settings.js',
   '/js/place.js', '/js/add.js', '/js/parsers.js', '/js/location.js', '/js/offline.js',
   '/js/zoomlock.js', '/js/photozoom.js',
+  '/changelog.json', '/js/changelog.js', '/js/whatsnew.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
   '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js', '/js/chat.js', '/js/android.js', '/js/basemap.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
