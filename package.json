@@ -1,6 +1,6 @@
 {
   "name": "tabi",
-  "version": "1.8.1",
+  "version": "1.8.3",
   "description": "Self-hosted group trip planner PWA for Japan: shared map, itinerary voting, subgroups, expenses with receipt OCR, live locations, HA hosting",
   "main": "server/index.js",
   "scripts": {
