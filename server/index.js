@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb } from './db.js';
 import { createApp } from './app.js';
 import { createBlobStore } from './blobs.js';
-import { s3FromEnv } from './s3.js';
+import { s3FromEnv, coldFromEnv } from './s3.js';
 import { createHA, startBackups } from './ha.js';
 import { installDevCapture } from './devlog.js';
 
@@ -52,8 +52,9 @@ async function heartbeat() {
   } catch { /* storage unreachable: the lease code reports that */ }
 }
 
-let s3;
-try { s3 = s3FromEnv(env); } catch (e) { console.error(`Storage settings problem: ${e.message}`); process.exit(1); }
+let s3, cold;
+try { s3 = s3FromEnv(env); cold = coldFromEnv(env); } catch (e) { console.error(`Storage settings problem: ${e.message}`); process.exit(1); }
+if (cold && !s3) { console.error('COLD_S3_* is set, but S3_* (R2) is not: the cold store is a second tier behind R2.'); process.exit(1); }
 if (HA_ON && !s3) {
   console.error('HA_MODE is on but S3_ENDPOINT, S3_BUCKET, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are not all set.');
   process.exit(1);
@@ -109,7 +110,7 @@ process.on('SIGINT', () => shutdown(0, 'SIGINT'));
 async function main() {
   if (s3) { heartbeatRole = HA_ON ? 'standby' : 'single'; heartbeat(); setInterval(heartbeat, 120e3).unref(); }
   if (HA_ON) {
-    ha = createHA({ s3, dataDir: DATA_DIR, node: NODE, priority: PRIORITY, env, log });
+    ha = createHA({ s3, cold, dataDir: DATA_DIR, node: NODE, priority: PRIORITY, env, log });
     log(`[ha] ${NODE} (${PRIORITY}) waiting for the lease`);
     const standby = standbyServer();
     await ha.acquire();
@@ -118,7 +119,8 @@ async function main() {
   }
 
   db = openDb(DATA_DIR);
-  const blobs = createBlobStore(DATA_DIR, s3);
+  const blobs = createBlobStore(DATA_DIR, s3, { cold, db, env, log });
+  if (cold) log(`[storage] files: this disk, then R2, then ${cold.name} (old full-size pictures move there; everything is copied there)`);
   if (HA_ON) { heartbeatRole = 'leader'; heartbeat(); }
   app = createApp({ db, blobs, root: ROOT, dataDir: DATA_DIR, env, getHealth: () => ({ ...(ha ? ha.status() : { role: 'single', node: NODE }), version: VERSION, servers }) });
   await new Promise((r) => app.server.listen(PORT, r));
@@ -130,7 +132,7 @@ async function main() {
     // Losing the lease means another node may be serving: stop immediately and restart as standby.
     ha.runLeader(db, { onStepDown: (why) => { stopTunnel(); shutdown(75, `lost leadership (${why})`); } });
   } else if (s3) {
-    startBackups({ s3, dataDir: DATA_DIR, node: NODE, db, env, log });
+    startBackups({ s3, cold, dataDir: DATA_DIR, node: NODE, db, env, log });
     log('[backup] snapshots to S3 enabled');
   }
   startTunnel();

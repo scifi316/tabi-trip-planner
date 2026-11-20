@@ -7,8 +7,9 @@
 //   conditional writes only match the strong ETag
 // - any access key is accepted (requests are signed, but not checked)
 //
-// Extras for testing: GET /__down makes it fail every request with 503 (an R2 outage), /__up ends
-// that, and /__list shows what's stored.
+// Extras for testing: GET /__down makes it fail every request with 503 (an outage), /__up ends
+// that, /__list shows what's stored, and PUT /__corrupt/<bucket>/<key> replaces an object's
+// bytes without changing its name (to test that damaged copies are caught).
 //
 // node dev/s3.mjs [--port 9000] [--dir dev/.data/s3]
 import http from 'node:http';
@@ -39,12 +40,31 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/__down') { down = true; console.log('[s3] now failing every request (R2 outage)'); return res.end('down\n'); }
   if (url.pathname === '/__up') { down = false; console.log('[s3] back up'); return res.end('up\n'); }
+  if (url.pathname.startsWith('/__corrupt/') && req.method === 'PUT') {
+    const key = decodeURIComponent(url.pathname.slice('/__corrupt'.length));
+    const obj = read(key);
+    if (!obj) { res.writeHead(404); return res.end(); }
+    const bad = Buffer.from(obj.body); bad[bad.length >> 1] ^= 0xff;
+    fs.writeFileSync(fileOf(key), bad);
+    return res.end('corrupted\n');
+  }
   if (url.pathname === '/__list') {
     const items = fs.readdirSync(DIR).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')));
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(items.sort((a, b) => a.key.localeCompare(b.key)).map((o) => `${o.at}  ${String(o.size).padStart(9)}  ${o.key}`).join('\n') + '\n');
   }
   if (down) { res.writeHead(503); return res.end(); }
+  // ListObjectsV2 on a bucket: GET /<bucket>?list-type=2&prefix=...
+  if (req.method === 'GET' && url.searchParams.get('list-type') === '2') {
+    const bucket = url.pathname.split('/').filter(Boolean)[0];
+    const want = `/${bucket}/${url.searchParams.get('prefix') || ''}`;
+    const items = fs.readdirSync(DIR).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(fs.readFileSync(path.join(DIR, f), 'utf8')))
+      .filter((o) => o.key.startsWith(want)).sort((a, b) => a.key.localeCompare(b.key));
+    const esc = (v) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    res.writeHead(200, { 'content-type': 'application/xml' });
+    return res.end(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>${items.map((o) =>
+      `<Contents><Key>${esc(o.key.slice(bucket.length + 2))}</Key><Size>${o.size}</Size></Contents>`).join('')}</ListBucketResult>`);
+  }
   // Path style: /<bucket>/<key...>. A PUT of the bucket itself (no key) just succeeds.
   const key = decodeURIComponent(url.pathname);
   if (key.split('/').filter(Boolean).length < 2) { res.writeHead(200); return res.end(); }
