@@ -11,6 +11,7 @@ import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, c
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
 import { myPosition, locateOnce, setFollowGps } from './location.js';
+import { planMotion } from './cluster-motion.js';
 
 let map;
 let styleUrl = null;
@@ -84,6 +85,7 @@ export function initMap() {
   map.on('moveend', syncSoon);
   map.on('zoom', () => { if (stationsShown !== null && (map.getZoom() >= STATION_MIN_ZOOM) !== stationsShown) renderPlaces(); });
   map.on('sourcedata', (e) => { if (e.sourceId === PLACE_SRC && e.isSourceLoaded) syncSoon(); });
+  map.on('idle', syncSoon);
   let warned = false;
   const useFallback = () => {
     if (usingFallback || map.isStyleLoaded()) return;
@@ -281,8 +283,6 @@ const PLACE_SRC = 'places';
 const STATUS_KEYS = Object.keys(STATUS);
 let placeData = { type: 'FeatureCollection', features: [] };
 const pinnedMarkers = new Map(); // place id -> { marker, el, key }
-const dotMarkers = new Map();    // place id -> { marker, el, key }
-const clusterMarkers = new Map(); // 'c<cluster id>' -> { marker, el, key }
 // Zoomed out past city level, the day's numbered stops join the clusters too, so their badges don't
 // sit on top of (and steal taps from) a cluster. They come back as badges when you zoom into a city.
 const STATION_MIN_ZOOM = 11;
@@ -380,27 +380,71 @@ function dotStyle(el, p, eff, selected) {
 }
 
 // Draw a marker for each dot and cluster MapLibre currently shows.
-let syncTimer = 0, lastSync = 0;
+// When places group into a cluster (zooming out) or a cluster splits (zooming in), the bubbles glide
+// between the two instead of swapping in one frame: a new bubble grows out of the cluster it came
+// from, and an old one slides into the cluster it joined and fades. A bubble on its way out can't be
+// tapped, so taps always land on the bubbles that stay.
+let syncTimer = 0, lastSync = 0, drawnFromSource = false;
+const bubbles = new Map(); // 'c<cluster id>' or 'p<place id>' -> { marker, el, wrap, key, ll, count, cid, pid }
+const ghosts = new Map();  // same keys: bubbles still animating away
+const MOTION_MS = 280;
+// More changes than this in one go (a big jump in zoom) just swap, so slower phones don't stutter.
+const MOTION_MAX = 120;
+const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+const motionOn = () => !reduceMotion?.matches && typeof Element.prototype.animate === 'function';
 function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(syncClusters, 30); }
 function syncClusters() {
   lastSync = performance.now();
   if (!map) return;
-  let ready = false;
-  try { ready = !!map.getSource(PLACE_SRC) && map.isSourceLoaded(PLACE_SRC); } catch { /* no style yet */ }
+  let hasSource = false, ready = false;
+  try { hasSource = !!map.getSource(PLACE_SRC); ready = hasSource && map.isSourceLoaded(PLACE_SRC); } catch { /* no style yet */ }
+  // While MapLibre is still building the source's tiles (each new zoom level, new data) keep what's
+  // drawn: reading it half-built flashed every place as a loose dot for a moment. 'sourcedata' and
+  // 'idle' bring us back here once it's ready.
+  if (hasSource && !ready && drawnFromSource) return;
+  if (ready) drawnFromSource = true;
   // Until the map style has loaded there's nothing to cluster with: show every place as a plain dot.
   const feats = ready ? map.querySourceFeatures(PLACE_SRC) : placeData.features;
-  const seenDots = new Set(), seenClusters = new Set();
+
+  const want = new Map(); // key -> { ll, count, pr }
   for (const f of feats) {
     const pr = f.properties;
-    const ll = f.geometry.coordinates;
     if (pr.cluster) {
       const k = `c${pr.cluster_id}`;
-      if (seenClusters.has(k)) continue;
-      seenClusters.add(k);
-      const count = pr.point_count;
-      const key = [count, ll[0], ll[1], ...STATUS_KEYS.map((s) => pr[s] || 0)].join('|');
-      let m = clusterMarkers.get(k);
-      if (!m) { const id = pr.cluster_id; m = makeMarker(ll, () => openCluster(id, ll)); clusterMarkers.set(k, m); }
+      if (!want.has(k)) want.set(k, { ll: f.geometry.coordinates, count: pr.point_count, pr });
+    } else {
+      const k = `p${pr.id}`;
+      const p = want.has(k) ? null : state.places.get(pr.id);
+      // exact position from the place itself (tile geometry is slightly rounded)
+      if (p) want.set(k, { ll: [p.lng, p.lat], count: 1, pr });
+    }
+  }
+
+  const leaving = [...bubbles.keys()].filter((k) => !want.has(k));
+  const entering = [...want.keys()].filter((k) => !bubbles.has(k));
+  let plan = null;
+  if ((leaving.length || entering.length) && leaving.length + entering.length <= MOTION_MAX && motionOn()) {
+    const pt = (key, { ll, count }) => { const { x, y } = map.project(ll); return { key, x, y, count }; };
+    plan = planMotion(leaving.map((k) => pt(k, bubbles.get(k))), entering.map((k) => pt(k, want.get(k))));
+    // MapLibre renumbers clusters at every zoom level: one that kept its places keeps its bubble.
+    for (const { from, to } of plan.moves) { bubbles.set(to, bubbles.get(from)); bubbles.delete(from); }
+  }
+  for (const k of leaving) {
+    const m = bubbles.get(k);
+    if (!m) continue; // renumbered above
+    bubbles.delete(k);
+    if (plan) retire(k, m, plan.leave.get(k)); else m.marker.remove();
+  }
+
+  for (const [k, w] of want) {
+    let m = bubbles.get(k), isNew = false;
+    if (!m) { m = revive(k) || makeBubble(w.ll); bubbles.set(k, m); isNew = true; }
+    const { pr, ll, count } = w;
+    m.ll = ll;
+    m.count = count;
+    if (pr.cluster) {
+      m.cid = pr.cluster_id;
+      const key = ['c', count, ll[0], ll[1], ...STATUS_KEYS.map((s) => pr[s] || 0)].join('|');
       if (m.key !== key) {
         m.key = key;
         m.marker.setLngLat(ll);
@@ -414,20 +458,59 @@ function syncClusters() {
         m.wrap.style.zIndex = 2;
       }
     } else {
-      if (seenDots.has(pr.id)) continue;
+      m.cid = null;
+      m.pid = pr.id;
       const p = state.places.get(pr.id);
-      if (!p) continue;
-      seenDots.add(pr.id);
-      // exact position from the place itself (tile geometry is slightly rounded)
-      const at = [p.lng, p.lat];
-      let m = dotMarkers.get(pr.id);
-      if (!m) { m = makeMarker(at, () => openPlace(pr.id)); dotMarkers.set(pr.id, m); }
-      const key = [pr.s, p.lng, p.lat, p.name].join('|');
-      if (m.key !== key) { m.key = key; m.marker.setLngLat(at); dotStyle(m.el, p, pr.s, false); m.wrap.style.zIndex = 1; }
+      const key = ['p', pr.s, p.lng, p.lat, p.name].join('|');
+      if (m.key !== key) { m.key = key; m.marker.setLngLat(ll); dotStyle(m.el, p, pr.s, false); m.wrap.style.zIndex = 1; }
     }
+    if (isNew && plan) arrive(m, plan.enter.get(k));
   }
-  for (const [k, m] of dotMarkers) if (!seenDots.has(k)) { m.marker.remove(); dotMarkers.delete(k); }
-  for (const [k, m] of clusterMarkers) if (!seenClusters.has(k)) { m.marker.remove(); clusterMarkers.delete(k); }
+}
+
+function makeBubble(ll) {
+  const m = makeMarker(ll, () => (m.cid != null ? openCluster(m.cid, m.ll) : openPlace(m.pid)));
+  return m;
+}
+// A new bubble grows out of the cluster it came from (or just fades in).
+function arrive(m, from) {
+  m.anim?.cancel();
+  const start = from ? `translate(${from.dx}px, ${from.dy}px) scale(.55)` : 'scale(.55)';
+  m.anim = m.el.animate(
+    [{ transform: start, opacity: from ? 0.7 : 0 }, { transform: 'none', opacity: 1 }],
+    { duration: from ? MOTION_MS : MOTION_MS * 0.6, easing: 'cubic-bezier(.2, .8, .2, 1)' },
+  );
+}
+// An old bubble slides into the cluster it joined (or just fades), then goes.
+function retire(k, m, to) {
+  m.anim?.cancel();
+  ghosts.get(k)?.marker.remove(); // never two of the same
+  ghosts.set(k, m);
+  m.el.style.pointerEvents = 'none';
+  m.el.setAttribute('aria-hidden', 'true');
+  m.el.tabIndex = -1;
+  m.wrap.style.zIndex = 0;
+  const end = to ? `translate(${to.dx}px, ${to.dy}px) scale(.55)` : 'scale(.55)';
+  const anim = m.el.animate(
+    [{ transform: 'none', opacity: 1 }, { transform: end, opacity: 0 }],
+    { duration: to ? MOTION_MS : MOTION_MS * 0.6, easing: 'cubic-bezier(.4, 0, .2, 1)', fill: 'forwards' },
+  );
+  m.anim = anim;
+  anim.onfinish = () => { if (ghosts.get(k) !== m || m.anim !== anim) return; ghosts.delete(k); m.marker.remove(); };
+}
+// Zooming back before a bubble has finished leaving: bring that same bubble back rather than add a
+// second one on top of it.
+function revive(k) {
+  const m = ghosts.get(k);
+  if (!m) return null;
+  ghosts.delete(k);
+  m.anim?.cancel();
+  m.anim = null;
+  m.el.style.pointerEvents = '';
+  m.el.removeAttribute('aria-hidden');
+  m.el.removeAttribute('tabindex');
+  m.key = null; // restyle it, z-index included
+  return m;
 }
 
 // A ring split by status, in the same colours as the dots.
