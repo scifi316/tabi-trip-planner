@@ -7,6 +7,7 @@ browser ─▶ edge  :8080   stand-in for Cloudflare: sends traffic to whichever
              ├─▶ primary :8101   ┐ the real server code, with failover on,
              └─▶ backup  :8102   ┘ exactly as on the droplet and the home server
                     both share ─▶ s3 :9000   stand-in for R2: the leader lease, database snapshots, photos
+                               └▶ cold :9002 stand-in for Backblaze B2: a copy of every file, older photos, old snapshots
 ```
 
 **What's the same as production:**
@@ -37,6 +38,7 @@ Open <http://localhost:8080>. The demo trip has Kenny (the admin), Sam, Mia and 
 All four processes print to that one window, each line labelled with which process sent it. Two pages show what's going on:
 - <http://localhost:8080/__edge>: which node is serving, and what each one reports.
 - <http://localhost:9000/__list>: what's in the stand-in for R2.
+- <http://localhost:9002/__list>: what's in the stand-in for B2 (the cold store). `--no-cold` runs without one.
 
 Optional settings (the private-link key, GIF search, a dev tunnel) go in `dev/.env`: copy `dev/.env.example`.
 
@@ -80,9 +82,21 @@ You can also do it by hand in the stack's own window. Type a letter and press En
 | `k` | Kill the primary |
 | `s` | Start the primary again |
 | `d` / `u` | Take the stand-in for R2 down, and bring it back up |
+| `cd` / `cu` | The same for the cold store (B2) |
 | `q` | Quit |
 
 **About losing data in a crash:** the leader uploads a snapshot whenever data has changed, at most every 5 s here and every 15 s in production. A node that dies without warning loses whatever changed since its last snapshot. A clean stop (an update, or the primary handing back) uploads a final snapshot first, so nothing is lost. The drill waits for a snapshot before pulling the plug.
+
+## Storage tiers
+
+The stack runs a second storage stand-in playing Backblaze B2, and runs the storage upkeep every minute (production: every 10). *Developer console → Overview → File storage* shows both stores.
+
+- **See files move cold:** put `COLD_AFTER_DAYS=0` and `COLD_CHAT_AFTER_DAYS=0` in `dev/.env`, restart, add a Picture a day photo, and within a minute the full-size photo leaves <http://localhost:9000/__list> (the thumbnail stays). It still opens.
+- **R2 outage:** `d`, upload a photo (it goes straight to the cold store), `u`, and the next run copies it back to R2.
+- **A damaged copy:** `curl -X PUT localhost:9000/__corrupt/tabi-dev/tabi/blobs/<file>`, then remove the file from `dev/.data/primary/blobs/` and open it: the cold copy is served and R2 gets a good one back.
+- **Before rolling back:** `STORAGE_ALL_HOT=1` in `dev/.env` brings everything back into R2.
+
+`npm test` covers the same cases without the stack (`test/storage.test.mjs`).
 
 ## Testing on a phone
 
@@ -124,7 +138,7 @@ A pull request that breaks startup, the demo trip or failover shows a red cross 
 |---|---|
 | `dev/stack.mjs` | Starts everything; restarts nodes like Docker does; the drill keys |
 | `dev/edge.mjs` | The stand-in for Cloudflare |
-| `dev/s3.mjs` | The stand-in for R2, kept on disk |
+| `dev/s3.mjs` | The stand-ins for R2 and B2, kept on disk |
 | `dev/seed.mjs` | The demo trip |
 | `dev/pr.mjs` | Runs a pull request or branch |
 | `dev/failover.mjs` | The failover drill |

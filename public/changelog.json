@@ -14,6 +14,15 @@
       ]
     },
     {
+      "version": "1.8.8",
+      "date": "2026-11-20",
+      "prs": [26],
+      "changes": [
+        "Photos, chat pictures and receipts nobody has opened for a while move to cheaper long-term storage, and still open as before.",
+        "Every file is checked against a second copy, so a lost or damaged one is fetched from the other store."
+      ]
+    },
+    {
       "version": "1.8.7",
       "date": "2026-11-20",
       "tickets": ["TA-18"],

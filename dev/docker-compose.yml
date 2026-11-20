@@ -7,6 +7,7 @@
 #   node dev/failover.mjs --docker                                failover drill
 #
 #   browser ─▶ edge :8080 (stand-in for Cloudflare) ─▶ the leader: primary or backup ─▶ s3 (stand-in for R2)
+#                                                                                     └▶ cold (stand-in for Backblaze B2)
 #
 # Settings: dev/.env (copy dev/.env.example). With TUNNEL_TOKEN set to a tunnel of your own (for a
 # dev hostname), the leader runs cloudflared exactly as production does.
@@ -18,7 +19,7 @@ x-node: &node
   env_file:
     - path: .env
       required: false
-  depends_on: [s3]
+  depends_on: [s3, cold]
 
 x-node-env: &node-env
   HA_MODE: "on"
@@ -27,6 +28,12 @@ x-node-env: &node-env
   S3_BUCKET: tabi-dev
   S3_ACCESS_KEY_ID: dev
   S3_SECRET_ACCESS_KEY: dev
+  COLD_S3_ENDPOINT: http://cold:9000
+  COLD_S3_BUCKET: tabi-dev-cold
+  COLD_S3_ACCESS_KEY_ID: dev
+  COLD_S3_SECRET_ACCESS_KEY: dev
+  STORAGE_UPKEEP_FIRST_MS: "10000"
+  STORAGE_UPKEEP_MS: "60000"
   # Faster than production (30 s lease, 2 min failback) so drills take seconds
   HA_LEASE_TTL_MS: "8000"
   HA_RENEW_MS: "2000"
@@ -45,6 +52,16 @@ services:
       - ./:/dev-tools:ro
       - s3:/s3
     ports: ["9000:9000"]       # http://localhost:9000/__list shows what's stored
+    healthcheck: { disable: true }
+
+  cold:
+    image: tabi:dev
+    command: ["node", "/dev-tools/s3.mjs", "--port", "9000", "--dir", "/s3"]
+    volumes:
+      - ./:/dev-tools:ro
+      - cold:/s3
+    ports: ["9002:9000"]       # http://localhost:9002/__list
+    depends_on: [s3]            # same image, built once by s3
     healthcheck: { disable: true }
 
   primary:
@@ -81,5 +98,6 @@ services:
 
 volumes:
   s3:
+  cold:
   primary:
   backup:

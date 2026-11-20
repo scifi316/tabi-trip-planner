@@ -263,6 +263,21 @@ export function openDb(dataDir) {
       created_at INTEGER,
       PRIMARY KEY (message_id, user_id, emoji)
     );
+    -- Where each stored file (photo, chat picture, receipt, emoji...) has a copy: hot = R2, cold =
+    -- the second store (B2). Lets old full-size pictures leave R2 once B2 has a checked copy.
+    CREATE TABLE IF NOT EXISTS blob_index (
+      key TEXT PRIMARY KEY,
+      kind TEXT,
+      size INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      last_read_at INTEGER,
+      reads INTEGER NOT NULL DEFAULT 0,
+      hot INTEGER NOT NULL DEFAULT 0,
+      cold INTEGER NOT NULL DEFAULT 0,
+      checked_at INTEGER,
+      problem TEXT
+    );
+    CREATE INDEX IF NOT EXISTS blob_index_hot ON blob_index(hot, cold);
     CREATE TABLE IF NOT EXISTS chat_reads (
       user_id INTEGER NOT NULL,
       chat TEXT NOT NULL,
