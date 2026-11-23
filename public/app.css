@@ -1434,6 +1434,7 @@ a.btn { text-decoration: none; }
 .changelog .release > summary::-webkit-details-marker { display: none; }
 .changelog .release > summary .label { font-weight: 600; flex: 1; }
 .changelog .release > summary .help { font-size: 13px; color: var(--ink-2); }
+.changelog .release-tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; vertical-align: 1px; }
 .changelog .release > summary::after { content: ''; width: 8px; height: 8px; border: solid var(--ink-3); border-width: 0 2px 2px 0; transform: translateY(-2px) rotate(45deg); transition: transform .2s var(--ease); align-self: center; }
 .changelog .release[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
 .changelog .release ul { margin: -4px 0 0; padding: 0 16px 12px 32px; color: var(--ink); font-size: 14px; line-height: 1.45; }
