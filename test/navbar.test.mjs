@@ -1,5 +1,6 @@
-// 1.9: a permanent navigation bar, like Google Maps'. It can't be hidden any more and only steps aside while the
-// on-screen keyboard is up on a phone (public/js/navbar.js); cards dock above it instead of covering it (app.css).
+// 1.9: a permanent navigation bar, like Google Maps'. It can't be hidden any more. It steps aside only while the
+// on-screen keyboard is up on a phone (public/js/navbar.js) and while a chat conversation is open on a phone, like
+// messaging apps; cards dock above it instead of covering it (app.css).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -155,13 +156,17 @@ test('every tab has an icon pill and a label, and the screens are the same as be
   assert.match(nav, /data-notif-count/);
 });
 
-test('cards dock above the bar, the chat box sits on it, and the bar only steps aside for the keyboard', () => {
+test('cards dock above the bar, a conversation hides it like messaging apps, and otherwise it only steps aside for the keyboard', () => {
   const css = read('public/app.css');
   assert.match(css, /\.sheet\.peek \{ bottom: var\(--bar-b\);/);
   assert.match(css, /\.screen-chat \{ bottom: var\(--bar-b\); \}/);
   assert.match(css, /html\.kb-open \{ --tab-h: 0px; --bar-b: 0px; --bar-safe: var\(--safe-b\); \}/);
   assert.match(css, /html\.kb-open \.tabbar \{ transform: translateY\(100%\); visibility: hidden; \}/);
-  assert.doesNotMatch(css, /chat-convo \.tabbar/, 'a conversation no longer hides the bar');
+  // Like messaging apps, an open conversation on a phone hides the bar (upright and sideways) and the chat box sits at the bottom
+  assert.match(css, /\.app\.chat-convo \{ --tab-h: 0px; --bar-b: 0px; --bar-safe: var\(--safe-b\); \}/);
+  assert.match(css, /\.app\.chat-convo \.tabbar \{ display: none; \}/);
+  assert.match(css, /\.app\.chat-convo \{ padding-left: 0; \}/, 'sideways, the rail goes too');
+  assert.match(read('public/js/chat.js'), /classList\.toggle\('chat-convo', !wideScreen\(\)\)/, 'only below the wide-screen layout');
   // Both rail layouts (computers, phones held sideways) keep the rail while typing and reserve no bottom space
   assert.equal((css.match(/:root \{ --tab-h: 0px; --bar-b: 0px; --bar-safe: var\(--safe-b\);/g) || []).length, 2);
   assert.equal((css.match(/html\.kb-open \.tabbar \{ transform: none; visibility: visible; \}/g) || []).length, 2);

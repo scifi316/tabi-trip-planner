@@ -1,6 +1,7 @@
-// 1.9: the navigation bar is permanent, like Google Maps'. It can no longer be hidden, and stays put on every screen,
-// a chat conversation included. The one time it steps aside is while you type on a phone: the on-screen keyboard
-// already takes half the screen, and a bar sitting on top of it would only push the text box out of sight.
+// 1.9: the navigation bar is permanent, like Google Maps'. It can no longer be hidden, and stays put on every screen
+// except an open chat conversation on a phone, which hides it like messaging apps do (app.css, .chat-convo). The
+// other time it steps aside is while you type on a phone: the on-screen keyboard already takes half the screen, and
+// a bar sitting on top of it would only push the text box out of sight.
 //
 // That's done with a class on <html> rather than on #app, because the bottom sheets (#sheet-root) sit outside #app
 // and dock above the bar, so they need to know too. app.css does the rest with --tab-h.

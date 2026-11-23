@@ -1217,7 +1217,11 @@ button.emoji-cell:hover { background: var(--surface-3); }
    Each chat wears its line colour as a station roundel: indigo for Everyone, a subgroup's own colour
    for its chat. The same colour runs under the conversation header. Bubbles stay quiet. */
 .screen-chat { bottom: var(--bar-b); }
-/* 1.9: the bar stays under a conversation too; the chat box sits on it, and drops to the bottom while you type. */
+/* 1.9: like messaging apps, an open conversation on a phone hides the bar and the chat box sits at the bottom;
+   the back arrow returns to the chat list, where the bar shows again. chat.js sets .chat-convo only below the
+   wide-screen layout, so computers and tablets keep the rail. */
+.app.chat-convo { --tab-h: 0px; --bar-b: 0px; --bar-safe: var(--safe-b); }
+.app.chat-convo .tabbar { display: none; }
 .chat-wrap { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); }
 .chat-wrap[data-open="0"] .convo, .chat-wrap[data-open="1"] .chat-side, .convo-empty { display: none; }
 .chat-side { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-top: calc(var(--safe-t) + 10px); background: var(--bg); }
@@ -1406,6 +1410,7 @@ button.emoji-cell:hover { background: var(--surface-3); }
   .gif-grid { columns: 3; }
 }
 @media (orientation: landscape) and (max-height: 520px) {
+  .app.chat-convo { padding-left: 0; }
   .convo-head, .composer, .convo-scroll { padding-left: max(var(--safe-l), 6px); padding-right: var(--safe-r); }
   .convo-head { padding-top: 6px; padding-bottom: 8px; }
   .chat-side { padding-top: 6px; }
