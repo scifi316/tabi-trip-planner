@@ -198,6 +198,21 @@ export function openDb(dataDir) {
     );
     CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id);
 
+    -- Ready for Japan (TA-36): what each phone says about itself when it connects.
+    CREATE TABLE IF NOT EXISTS devices (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      installed INTEGER NOT NULL DEFAULT 0,  -- opened from the home screen, or the Tabi for Android app
+      android INTEGER NOT NULL DEFAULT 0,    -- the Tabi for Android app
+      endpoint TEXT,                         -- this device's push subscription, matched against push_subs
+      blocked INTEGER NOT NULL DEFAULT 0,    -- notifications blocked in the browser
+      maps TEXT,                             -- offline maps: fresh | stale | none
+      maps_at INTEGER,
+      ua TEXT,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, device_id)
+    );
+
     -- Custom emojis anyone can add (128×128 at most), used like :ramen: in reactions.
     CREATE TABLE IF NOT EXISTS custom_emojis (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

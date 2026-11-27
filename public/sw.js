@@ -12,6 +12,7 @@ const SHELL = [
   '/js/devview.js',
   '/js/money.js', '/js/groups.js', '/js/tour.js', '/js/receipt.js', '/js/ocr.js', '/js/friends.js',
   '/js/notifications.js', '/js/photo.js', '/js/fx.js', '/js/owntracks.js', '/js/account.js', '/js/tooltip.js', '/js/notifpage.js', '/js/reactions.js', '/js/push.js', '/js/emoji.js', '/js/photos.js', '/js/stays.js', '/js/chat.js', '/js/android.js', '/js/basemap.js',
+  '/js/ready.js', '/js/readycheck.js',
   '/vendor/maplibre-gl/maplibre-gl.mjs', '/vendor/maplibre-gl/maplibre-gl.css',
   '/vendor/maplibre-gl/maplibre-gl-worker.mjs',
   '/vendor/fflate/browser.js',

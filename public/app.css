@@ -1442,3 +1442,39 @@ a.btn { text-decoration: none; }
 .changelog .release.older > .release > summary { padding-left: 24px; }
 .whatsnew .changelog { margin: 0; }
 .whatsnew-more { font-size: 13px; color: var(--ink-2); margin: 12px 4px 0; }
+
+/* ---------- Ready for Japan (TA-36): the setup check at the top of Settings ---------- */
+.ready-head { gap: 14px; }
+.ready-head .label { font-weight: 700; font-size: 16px; }
+.ready-ring { --p: 0; width: 46px; height: 46px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  background: conic-gradient(var(--c-confirmed) calc(var(--p) * 360deg), var(--surface-2) 0); }
+.ready-ring .num { width: 36px; height: 36px; border-radius: 50%; background: var(--surface); display: grid; place-items: center; font-size: 12.5px; font-weight: 700; }
+.ready-item { align-items: flex-start; }
+.ready-item .btn { flex: none; align-self: center; }
+.ready-tick { width: 24px; height: 24px; border-radius: 50%; flex: none; margin-top: 1px; display: grid; place-items: center;
+  border: 2px solid var(--ink-3); color: #fff; }
+.ready-tick .i { width: 15px; height: 15px; stroke-width: 2.6; }
+.ready-item[data-ok="true"] .ready-tick { background: var(--c-confirmed); border-color: var(--c-confirmed); }
+.ready-item[data-ok="true"] .label { color: var(--ink-2); }
+.ready-opt { font-size: 11.5px; font-weight: 600; padding: 1px 7px; border-radius: 10px; background: var(--surface-2); color: var(--ink-2); vertical-align: 1px; white-space: nowrap; }
+.ready-pill { font-size: 11.5px; font-weight: 700; padding: 1px 7px; border-radius: 10px; vertical-align: 1px; white-space: nowrap; background: var(--surface-2); color: var(--ink-2); }
+.ready-pill[data-tone="good"] { color: var(--c-confirmed); background: color-mix(in srgb, var(--c-confirmed) 14%, var(--surface)); }
+.ready-pill[data-tone="unknown"] { color: color-mix(in srgb, var(--c-maybe) 75%, var(--ink)); background: color-mix(in srgb, var(--c-maybe) 16%, var(--surface)); }
+.ready-pill[data-tone="bad"] { color: var(--c-missed); background: color-mix(in srgb, var(--c-missed) 12%, var(--surface)); }
+/* all ticked: one line */
+.ready-done { display: flex; gap: 12px; align-items: center; margin: 0 10px 18px; padding: 12px 14px; border-radius: var(--r-m);
+  background: color-mix(in srgb, var(--c-confirmed) 12%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c-confirmed) 35%, transparent); }
+.ready-done .grow { flex: 1; min-width: 0; }
+.ready-done .help { font-size: 13px; margin-top: 2px; color: var(--ink-2); }
+.ready-done .btn { flex: none; }
+.ready-badge { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--c-confirmed); color: #fff; }
+.ready-badge .i { width: 18px; height: 18px; stroke-width: 2.4; }
+/* admins: each person's check in the Group list */
+.ready-line { display: flex; gap: 5px; align-items: flex-start; font-size: 13px; margin-top: 3px; color: color-mix(in srgb, var(--c-maybe) 70%, var(--ink)); }
+.ready-line[data-tone="good"] { color: var(--c-confirmed); font-weight: 600; }
+.ready-line .i { width: 15px; height: 15px; flex: none; margin-top: 1px; stroke-width: 2.4; }
+.ready-nudge { margin-top: 8px; }
+.ready-steps { margin: 0; padding-left: 22px; line-height: 1.5; }
+.ready-steps li + li { margin-top: 8px; }
+.ready-sheet p { margin-top: 0; }
+.ready-todo { margin: 0 0 14px; padding-left: 22px; font-weight: 600; line-height: 1.6; }

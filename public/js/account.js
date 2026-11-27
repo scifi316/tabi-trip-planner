@@ -129,6 +129,8 @@ const due = () => {
   const rec = state.me?.recovery;
   return !!rec && recoveryStatus() !== 'saved' && !(rec.snoozeUntil && rec.snoozeUntil > Date.now());
 };
+// The Ready for Japan prompt waits for another load if this one asks about the recovery code
+export const recoveryPromptThisLoad = () => prompting || shownThisLoad || due();
 export function maybePromptRecovery() {
   if (prompting || shownThisLoad || !due()) return;
   prompting = true;

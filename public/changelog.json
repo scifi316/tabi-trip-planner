@@ -2,6 +2,17 @@
   "about": "What's new in Tabi, newest first. Every release that changes package.json's version adds an entry here in the same pull request (test/changelog.test.mjs checks). Write changes for the people using the app, one short sentence each.",
   "releases": [
     {
+      "version": "1.8.13",
+      "date": "2026-11-27",
+      "tickets": ["TA-36"],
+      "changes": [
+        "New Ready for Japan card at the top of Settings: it ticks off what this phone needs for the trip, with a button that sets up each thing.",
+        "It checks the home screen app, lock-screen notifications, location sharing and your recovery code. A profile photo and offline maps are optional.",
+        "Tabi asks once after you sign in, with Remind me later. The card goes away after the trip’s first day.",
+        "Trip admins see who’s ready in the Group list, with what’s missing in plain words, and can Nudge someone with a notification."
+      ]
+    },
+    {
       "version": "1.8.10",
       "date": "2026-11-20",
       "tickets": ["TA-9", "TA-10"],

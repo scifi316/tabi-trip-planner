@@ -2,7 +2,7 @@
 import { state, on, emit, op, api, userById, signOutLocal } from './store.js';
 import { esc, icon, avatar, toast, ago, openSheet } from './ui.js';
 import { deviceSending, syncWatcher, isWatching, requestWake } from './location.js';
-import { planPack, downloadPack, mapCacheInfo, clearMapCache } from './offline.js';
+import { planPack, downloadPack, mapCacheInfo, clearMapCache, noteStopsPackDone } from './offline.js';
 import { openImport } from './add.js';
 import { meButton, applyTheme, hardReload } from './main.js';
 import { resetTours, maybeStartTour } from './tour.js';
@@ -15,6 +15,7 @@ import { recoveryAction, recoveryStatus, openRecoverySetup, openResetLink } from
 import { pushBlockHtml, bindPushBlock } from './push.js';
 import { fillChangelog } from './whatsnew.js';
 import { closedSharingHtml, bindClosedSharing, inApp, adminHtml as androidAdminHtml, bindAdmin as bindAndroidAdmin } from './android.js';
+import { readyCardHtml, bindReadyCard, memberReady, nudge, reportDevice } from './ready.js';
 
 const root = () => document.getElementById('screen-settings');
 const COLORS = ['#E60012', '#F39700', '#00A672', '#009BBF', '#8F76D6', '#C1A470', '#00AC9B', '#E85298', '#0079C2', '#6E7681'];
@@ -27,7 +28,7 @@ function maybeRender() {
   if (a && root().contains(a) && a.matches('input:not([type=checkbox]), textarea')) return; // don't interrupt typing
   render();
 }
-['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery', 'emojis', 'photos', 'stays', 'app'].forEach((e) => on(e, maybeRender));
+['users', 'trip', 'conn', 'outbox', 'activity', 'locations', 'notif-prefs', 'owntracks', 'expense-reset', 'me-recovery', 'emojis', 'photos', 'stays', 'app', 'me-ready', 'ready', 'device-ready'].forEach((e) => on(e, maybeRender));
 // Keep "3 min ago" honest while Settings is open
 setInterval(() => { if (!document.hidden) maybeRender(); }, 60e3);
 
@@ -65,6 +66,20 @@ function recoveryBanner() {
     <button class="btn small primary" data-recovery>${esc(btn)}</button></div>`;
 }
 
+// One person in the Group list. Admins also see their Ready for Japan check (until the trip's first day is over).
+function memberRow(u, me, admin) {
+  const rl = memberReady(u);
+  const recovery = !admin || rl ? '' : !u.hasRecovery ? ', no recovery code' : u.recoverySaved === false ? ', recovery code not saved yet' : '';
+  return `
+        <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
+          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${recovery}</div>
+          ${rl ? `<div class="ready-line" data-tone="${rl.tone}">${rl.tone === 'good' ? icon('check', 'small') : ''}<span>${esc(rl.text)}</span></div>` : ''}
+          ${rl?.tone === 'warn' && u.id !== me.id ? `<button class="btn small ready-nudge" data-nudge="${u.id}">${icon('bell', 'small')}Nudge</button>` : ''}</div>
+          ${u.isAdmin ? '<span class="tag">Admin</span>' : ''}
+          ${admin && u.id !== me.id ? `<button class="btn small" data-member="${u.id}">Manage</button>` : ''}
+        </div>`;
+}
+
 export function render() {
   const el = root();
   const me = state.me || {};
@@ -81,7 +96,7 @@ export function render() {
     <header class="page-head">${meButton()}<div class="grow"><h1>Settings</h1>
       <div class="sub">${state.conn === 'online' ? 'Connected' : state.conn === 'connecting' ? 'Connecting…' : 'Offline'}${pending ? `, ${pending} change${pending > 1 ? 's' : ''} waiting to sync` : ''}</div></div></header>
 
-    ${recoveryBanner()}
+    ${readyCardHtml({ downloading: !!download }) || recoveryBanner()}
     <section class="section"><h2>You</h2><div class="card">
       <div class="row"><button class="photo-btn" data-photo aria-label="Change your profile photo">${avatar(me, 'big')}<span class="photo-cam">${icon('camera', 'small')}</span></button>
         <div class="grow"><div class="label">${esc(me.name)}</div><div class="help">${admin ? 'Trip admin' : 'Member'}</div></div>
@@ -180,12 +195,7 @@ export function render() {
         ? `${(state.customEmojis || []).slice(0, 8).map((e) => `<img class="cemoji inline" src="${esc(e.url)}" alt=":${esc(e.name)}:">`).join('')} ${state.customEmojis.length} made by the group, for reactions.`
         : 'Add your own, like a photo of the group or a mascot, to send as reactions.'}</div></div>
         <button class="btn small" data-emojis>${icon('smile')}Emojis</button></div>
-      ${state.users.map((u) => `
-        <div class="row member">${avatar(u)}<div class="grow"><div class="label">${esc(u.name)}${u.id === me.id ? ' <span class="faint">(you)</span>' : ''}</div>
-          <div class="help">${state.online.includes(u.id) ? 'Online' : 'Offline'}${u.shareLocation ? (state.locations[u.id] ? `, location ${ago(state.locations[u.id].ts)}` : ', sharing location') : ''}${admin && !u.hasRecovery ? ', no recovery code' : admin && u.recoverySaved === false ? ', recovery code not saved yet' : ''}</div></div>
-          ${u.isAdmin ? '<span class="tag">Admin</span>' : ''}
-          ${admin && u.id !== me.id ? `<button class="btn small" data-member="${u.id}">Manage</button>` : ''}
-        </div>`).join('')}
+      ${state.users.map((u) => memberRow(u, me, admin)).join('')}
     </div></section>
     ${admin && state.formerUsers.length ? `
     <section class="section" data-section="former"><h2>Former members</h2><div class="card">
@@ -318,6 +328,8 @@ function bind(el) {
     else copy(url);
   };
   el.querySelectorAll('[data-member]').forEach((b) => b.onclick = () => memberSheet(+b.dataset.member));
+  el.querySelectorAll('[data-nudge]').forEach((b) => b.onclick = () => nudge(userById(+b.dataset.nudge), b));
+  bindReadyCard(el, { render, ownTracksSheet, startDownload });
   el.querySelector('[data-import]').onclick = () => openImport('mymaps');
   el.querySelector('[data-subgroups]').onclick = () => openGroups();
   el.querySelector('[data-tips]').onclick = () => { resetTours(); toast('Tips will show again on each screen.'); maybeStartTour('settings', { delay: 200, force: true }); };
@@ -354,6 +366,8 @@ async function startDownload(kind) {
         if (Date.now() - lastPaint > 250) { lastPaint = Date.now(); maybeRender(); }
       },
     });
+    // Ready for Japan: this phone has the maps around every place, as the places are now
+    if (kind === 'stops' && !controller.signal.aborted && !res.remaining && !res.failed) { noteStopsPackDone(); reportDevice(); }
     toast(controller.signal.aborted ? 'Download stopped. What finished is saved.'
       : res.remaining ? `Saved ${res.downloaded} files. ${res.remaining} more remain: run it again later to continue.`
         : res.downloaded ? `Saved ${res.downloaded} map files for offline use` : 'Everything here was already saved', { ms: 5000 });

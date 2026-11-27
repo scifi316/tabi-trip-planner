@@ -154,6 +154,7 @@ function handle(m) {
       state.stays = m.stays || [];
       state.chats = m.chats || [];
       state.expenseReset = m.expenseReset || null;
+      state.ready = m.ready || null; // admins: everyone's Ready for Japan check
       state.places = new Map(m.places.map((p) => [p.id, p]));
       state.expenses = new Map((m.expenses || []).map((e) => [e.id, e]));
       for (const o of state.outbox) applyLocal(o.op, o.data); // keep unsent edits visible
@@ -222,6 +223,8 @@ function handle(m) {
     case 'notif.reset': state.notifications = m.notifications || []; state.unread = m.unread || 0; emit('notifs', { reset: true }); persistSoon(); break;
     case 'me.recovery': if (state.me) state.me.recovery = m.recovery; emit('me-recovery'); persistSoon(); break;
     case 'owntracks.status': if (state.me) state.me.owntracks = m.status; emit('owntracks'); persistSoon(); break;
+    case 'me.ready': if (state.me) state.me.ready = m.ready; emit('me-ready'); persistSoon(); break;
+    case 'ready': state.ready = m.list || null; emit('ready'); break;
     case 'expense.resetInfo': state.expenseReset = m.info; emit('expense-reset'); break;
     case 'notif.prefs': if (state.me) state.me.notifyPrefs = m.prefs; emit('notif-prefs'); persistSoon(); break;
     case 'kicked': emit('unauthorized'); break;

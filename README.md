@@ -124,6 +124,10 @@ A private, self-hosted web app for a group of friends travelling together: a sha
 ### App
 - [x] Light and dark mode, either following the phone or set by hand.
 - [x] Offline: the app opens with no connection. Map areas you've viewed are cached, and you can **save maps around all your places** ahead of time. Receipt images are cached too.
+- [x] **Ready for Japan**: a checklist at the top of Settings until the trip's first day is over.
+  - Required: Tabi on the home screen (or the Android app), lock-screen notifications on that phone, location heard from in the last 24 hours, and a saved recovery code. A profile photo (optional) and offline maps (suggested) never block it.
+  - Each item has a button that fixes it. One ready phone is enough. It's shown once after signing in, with *Remind me later*.
+  - Admins see everyone's status in the Group list, with a *Nudge* that notifies just that person. The developer console's Accounts tab has it too.
 - [x] **First-run tips** for each screen, which can be skipped and replayed from Settings. People who already finished them get a short "what's new" tour once.
 - [x] **Staying up to date**: open apps reload themselves when a new version is deployed.
   - If a browser keeps loading an old copy, the next try clears Tabi's offline copy first.
@@ -203,6 +207,7 @@ server/auth.js     Cookie sessions with an in-memory cache, gate token
 server/ha.js       Leader lease, snapshots, failover and hand-back
 server/s3.js       Minimal S3/R2/B2 client;  server/blobs.js  file storage across disk, R2 and B2
 server/notify.js   Notifications: who's told what, merging repeats, per-person switches
+server/ready.js    Ready for Japan: each person's setup checks, and what each phone reports
 server/push.js     Web Push: encryption (RFC 8291) and signing (RFC 8292) with Node’s own crypto, no extra dependencies
 server/images.js   Reads image sizes from file headers (profile photo checks)
 server/chat.js     Group chat: who's in which chat, messages, mentions, reactions, unread counts
@@ -223,6 +228,7 @@ public/            No-build PWA (plain ES modules)
   js/tour.js       First-run tips
   js/settings.js   Account, devices, sharing, theme, offline maps, trip admin
   js/push.js       Lock-screen notifications (Web Push), per device
+  js/ready.js      Ready for Japan card, sign-in prompt and Nudge;  js/readycheck.js  its wording
   js/photos.js     Picture a day: adding, viewer, album
   js/stays.js      Where we're staying: houses on the map, Home
   js/emoji.js      Custom emojis: editor and picker
