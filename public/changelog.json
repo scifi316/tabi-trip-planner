@@ -13,6 +13,19 @@
       ]
     },
     {
+      "version": "1.8.11",
+      "date": "2026-11-23",
+      "tag": "Pre 1.9",
+      "tickets": ["TA-19"],
+      "changes": [
+        "The navigation bar at the bottom now stays on screen all the time, like in Google Maps, and can no longer be hidden.",
+        "Place cards and the day card sit just above the bar instead of covering it.",
+        "Like in messaging apps, the bar hides while a chat conversation is open and comes back when you go back to your chats.",
+        "On phones, the bar steps aside while you type so the keyboard has room, and comes back when you're done.",
+        "The current tab is easier to spot, with a highlighted icon and a bold label."
+      ]
+    },
+    {
       "version": "1.8.10",
       "date": "2026-11-20",
       "tickets": ["TA-9", "TA-10"],

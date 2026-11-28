@@ -186,7 +186,7 @@ export function resizeMap() { map?.resize(); }
 function padding() {
   const c = map?.getContainer().getBoundingClientRect() || { left: 0, top: 0, right: innerWidth, bottom: innerHeight, width: innerWidth, height: innerHeight };
   const stripH = $('#line-strip')?.offsetHeight || 0;
-  const pad = { top: 120, bottom: (document.querySelector('.app.nav-collapsed') ? 60 : 70) + stripH + 20, left: 30, right: 70 };
+  const pad = { top: 120, bottom: 70 + stripH + 20, left: 30, right: 70 };
   for (const s of document.querySelectorAll('#sheet-root .sheet:not(.closing)')) {
     // Layout box, not the on-screen one: a card that is still sliding in counts where it will settle
     const r = { left: s.offsetLeft, top: s.offsetTop, width: s.offsetWidth, height: s.offsetHeight };

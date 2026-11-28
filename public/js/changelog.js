@@ -63,9 +63,10 @@ export function formatReleaseDate(date) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 }
 
+// A release can carry a short tag, like "Pre 1.9" for an early part of a bigger update.
 function releaseHtml(r, open) {
   const date = formatReleaseDate(r.date);
-  return `<details class="release" data-v="${esc(r.version)}"${open ? ' open' : ''}><summary><span class="label">Tabi ${esc(r.version)}</span>${date ? `<span class="help">${esc(date)}</span>` : ''}</summary>
+  return `<details class="release" data-v="${esc(r.version)}"${open ? ' open' : ''}><summary><span class="label">Tabi ${esc(r.version)}${r.tag ? ` <span class="release-tag">${esc(r.tag)}</span>` : ''}</span>${date ? `<span class="help">${esc(date)}</span>` : ''}</summary>
     <ul>${r.changes.map((c) => `<li>${esc(c)}</li>`).join('')}</ul></details>`;
 }
 // The changelog: the newest `expanded` releases open, older ones folded under "Earlier updates".
