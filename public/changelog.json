@@ -13,6 +13,16 @@
       ]
     },
     {
+      "version": "1.8.12",
+      "date": "2026-11-24",
+      "tickets": ["TA-20"],
+      "changes": [
+        "You now show on the map as your profile photo, or your initials when you don't have one, inside a blue ring so you never look like a friend.",
+        "Changing or removing your profile photo updates your place on the map straight away.",
+        "The Following you chip shows your photo too."
+      ]
+    },
+    {
       "version": "1.8.11",
       "date": "2026-11-23",
       "tag": "Pre 1.9",

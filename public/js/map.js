@@ -8,6 +8,7 @@ import { dayPhotoButton, bindDayPhotoButtons } from './photos.js';
 import { dressStyle, satelliteOn, setSatellite } from './basemap.js';
 import { openStay, openStays, openStayEditor, stayFor, stayTonight } from './stays.js';
 import { $, esc, icon, avatar, initials, STATUS, fmtDay, ago, debounce, toast, closePeekSheets, openSheet } from './ui.js';
+import { meMarkerKey, meMarkerHtml, meMarkerLabel, meChipAvatar } from './memarker.js';
 import { openPlace, selectedPlaceId } from './place.js';
 import { openAddOne, openImport } from './add.js';
 import { myPosition, locateOnce, setFollowGps } from './location.js';
@@ -115,7 +116,7 @@ export function initMap() {
   on('pick-location', pickLocation);
   on('select', renderPlaces);
   on('locations', renderFriends);
-  on('users', renderFriends);
+  on('users', () => { renderFriends(); renderMe(); renderFollowUi(); }); // a new or removed photo shows at once
   on('mypos', renderMe);
   on('trip', () => { renderStrip(); renderPlaces(); });
   on('focus-place', (id) => {
@@ -168,7 +169,7 @@ export function initMap() {
   let firstFit = true;
   on('state', () => {
     if (!stripDay) stripDay = defaultDay();
-    renderStrip(); renderPlaces(); renderFriends(); renderStays();
+    renderStrip(); renderPlaces(); renderFriends(); renderStays(); renderMe();
     if (firstFit) { firstFit = false; fitAll({ animate: false }); }
   });
   stripDay = defaultDay();
@@ -661,7 +662,7 @@ function fitFriends() {
 }
 
 // ---------- following (you, or a friend) ----------
-// Tap the locate button twice, or tap your blue dot: the map keeps you centred as you move.
+// Tap the locate button twice, or tap your own picture on the map: the map keeps you centred as you move.
 // Tap a friend on the map: it keeps them centred. Dragging the map, or "Stop", ends it.
 let follow = null; // null | { kind: 'me' } | { kind: 'friend', id }
 let lastLocate = 0;
@@ -696,12 +697,13 @@ function renderFollowUi() {
   btn.classList.toggle('following', follow?.kind === 'me');
   btn.setAttribute('aria-pressed', String(follow?.kind === 'me'));
   btn.setAttribute('aria-label', follow?.kind === 'me' ? 'Following you. Tap to stop.' : 'Show my location. Tap again to follow you.');
-  btn.dataset.tip = follow?.kind === 'me' ? 'Following you. Tap to stop following.' : 'Show my location. Tap again, or tap your blue dot, to follow you as you move.';
+  btn.dataset.tip = follow?.kind === 'me' ? 'Following you. Tap to stop following.' : 'Show my location. Tap again, or tap your picture on the map, to follow you as you move.';
+  renderMe();
   const chip = $('#follow-chip');
   if (!follow) { chip.hidden = true; return; }
   const u = follow.kind === 'me' ? state.me : userById(follow.id);
   chip.hidden = false;
-  chip.innerHTML = `${follow.kind === 'me' ? '<span class="me-dot mini"></span>' : avatar(u)}<span>Following ${follow.kind === 'me' ? 'you' : esc(u?.name || '')}</span><button data-stop-follow aria-label="Stop following">Stop</button>`;
+  chip.innerHTML = `${follow.kind === 'me' ? meChipAvatar(state.me) : avatar(u)}<span>Following ${follow.kind === 'me' ? 'you' : esc(u?.name || '')}</span><button data-stop-follow aria-label="Stop following">Stop</button>`;
   chip.querySelector('[data-stop-follow]').onclick = stopFollow;
 }
 
@@ -711,12 +713,17 @@ function renderMe() {
   if (!meMarker) {
     const el = document.createElement('button');
     el.type = 'button';
-    el.className = 'me-dot';
-    el.setAttribute('aria-label', 'You. Tap to follow your location.');
-    el.dataset.tip = 'You. Tap to follow your location as you move.';
+    el.className = 'me-marker';
     el.addEventListener('click', (e) => { e.stopPropagation(); if (follow?.kind === 'me') stopFollow(); else startFollow({ kind: 'me' }); });
     meMarker = new maplibregl.Marker({ element: el }).setLngLat([pos.lng, pos.lat]).addTo(map);
   }
+  const el = meMarker.getElement();
+  const key = meMarkerKey(state.me);
+  if (el.dataset.key !== key || !el.firstChild) { el.dataset.key = key; el.innerHTML = meMarkerHtml(state.me); }
+  const following = follow?.kind === 'me';
+  el.classList.toggle('following', following);
+  el.setAttribute('aria-label', meMarkerLabel(following));
+  el.dataset.tip = meMarkerLabel(following);
   meMarker.setLngLat([pos.lng, pos.lat]);
 }
 

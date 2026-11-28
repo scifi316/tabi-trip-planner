@@ -210,7 +210,21 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
   margin-top: 2px; padding: 1px 7px; border-radius: 9px; font-size: 11.5px; font-weight: 600; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); white-space: nowrap;
 }
 .friend-marker.stale .bubble { filter: grayscale(.7); opacity: .7; }
-.me-dot { width: 18px; height: 18px; border-radius: 50%; background: #1A73E8; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(26, 115, 232, .22), 0 1px 4px rgba(0,0,0,.4); }
+.me-marker {
+  position: relative; display: grid; place-items: center; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 50%;
+  background: none; cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+/* Your picture in a blue ring with a soft pulse, so it never reads as a friend's bubble (TA-20) */
+.me-bubble {
+  position: relative; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; overflow: hidden;
+  border: 2px solid #fff; color: #fff; font-weight: 700; font-size: 13px; letter-spacing: .01em; user-select: none;
+  box-shadow: 0 0 0 3px #1A73E8, 0 2px 8px rgba(0, 0, 0, .35);
+}
+.me-pulse { position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; background: rgba(26, 115, 232, .35); animation: me-pulse 2.4s ease-out infinite; pointer-events: none; }
+@keyframes me-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2.2); opacity: 0; } }
+.me-marker.following .me-bubble { box-shadow: 0 0 0 3px #1A73E8, 0 0 0 7px rgba(26, 115, 232, .3), 0 2px 8px rgba(0, 0, 0, .35); }
+.me-marker:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .me-pulse { animation: none; transform: scale(1.6); opacity: .35; } }
 
 /* Map marker wrappers: MapLibre moves these with a transform, so they carry no styling of their own.
    (A transition on them made dots trail behind the map while zooming.) */
@@ -869,7 +883,7 @@ label.btn { cursor: pointer; }
 
 /* ---------- profile photos ---------- */
 .avatar { position: relative; overflow: hidden; }
-.avatar img, .friend-marker .bubble img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+.avatar img, .friend-marker .bubble img, .me-bubble img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
 .friend-marker .bubble { position: relative; overflow: hidden; }
 .avatar.huge { width: 112px; height: 112px; font-size: 40px; }
 .photo-btn { position: relative; border: 0; padding: 0; background: none; border-radius: 50%; flex: none; }
@@ -973,8 +987,7 @@ label.btn { cursor: pointer; }
 .follow-chip .avatar { width: 24px; height: 24px; font-size: 10px; }
 .follow-chip button { border: 0; border-radius: 999px; padding: 5px 12px; background: var(--surface-2); color: var(--ink); font-weight: 700; font-size: 13px; }
 .follow-chip button:hover { background: var(--surface-3); }
-.me-dot { padding: 0; cursor: pointer; }
-.me-dot.mini { display: inline-block; width: 14px; height: 14px; border-width: 2.5px; box-shadow: 0 0 0 3px rgba(26, 115, 232, .22); cursor: default; }
+.follow-chip .avatar.me-ring { box-shadow: 0 0 0 2px #1A73E8; margin-left: 2px; }
 .btn.following { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent-ink) 50%, transparent); }
 
 /* ---------- accounts ---------- */
