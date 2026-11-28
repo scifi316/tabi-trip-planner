@@ -17,6 +17,8 @@ export const NOTIFY_KINDS = {
   chatAll: { default: false },             // chat: every message (merged per chat)
   // Always on, not shown in Settings: changes to your own account's password or recovery code.
   security: { default: true, locked: true },
+  // Always on too: a trip admin's nudge to finish the Ready for Japan setup (only to that one person).
+  setup: { default: true, locked: true },
 };
 
 const COALESCE_MS = 15 * 60e3;

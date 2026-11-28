@@ -20,6 +20,8 @@ export const KINDS = {
   reactions: { label: 'Waves and reactions', help: 'Someone sends you a 👋 or another emoji. Turning this off also stops them popping up on screen.', icon: 'smile' },
   // Always on: changes to your own password or recovery code. Not a switch.
   security: { label: 'Your account', icon: 'lock', locked: true },
+  // Always on: a trip admin's nudge to finish Ready for Japan. Not a switch.
+  setup: { label: 'Ready for Japan', icon: 'check', locked: true },
 };
 
 export const unreadCount = () => state.unread || 0;
@@ -141,6 +143,8 @@ export async function openTarget(n) {
     (await import('./account.js')).openResetLink(userById(ref.id));
   } else if (ref.type === 'account') {
     await emit('go', 'settings');
+  } else if (ref.type === 'setup') {
+    (await import('./ready.js')).showReadyCard();
   } else if (ref.type === 'stay' && ref.id) {
     emit('go', 'map');
     (await import('./stays.js')).openStay(String(ref.id));

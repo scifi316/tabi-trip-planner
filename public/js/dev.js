@@ -297,8 +297,8 @@ function mountAccounts() {
   if (!el) return;
   el.innerHTML = `<h3>Accounts</h3>
     <p class="hint" style="margin-top:0" id="acct-hint"></p>
-    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead>
-    <tbody id="acct-body"><tr class="empty-row"><td colspan="6">Loading…</td></tr></tbody></table></div>`;
+    <div class="tbl-wrap"><table><thead><tr><th>Person</th><th>Status</th><th>Ready for Japan</th><th>Recovery code</th><th>Devices</th><th>Last seen</th><th></th></tr></thead>
+    <tbody id="acct-body"><tr class="empty-row"><td colspan="7">Loading…</td></tr></tbody></table></div>`;
   $('#acct-body').addEventListener('click', async (e) => {
     const b = e.target.closest('[data-reset-link]');
     if (!b || b.disabled) return;
@@ -312,7 +312,7 @@ function mountAccounts() {
     await refreshPeople().catch(() => {});
     updateAccounts();
   });
-  refreshPeople().then(updateAccounts).catch((err) => patchRows($('#acct-body'), [], null, esc(err.message), { cols: 6 }));
+  refreshPeople().then(updateAccounts).catch((err) => patchRows($('#acct-body'), [], null, esc(err.message), { cols: 7 }));
 }
 function updateAccounts() {
   if (!$('#acct-body') || !people.length) return;
@@ -320,12 +320,13 @@ function updateAccounts() {
   patchRows($('#acct-body'), people, (p) => `<tr>
       <td><span class="badge" style="background:${esc(p.color)};color:#fff">${esc(p.name)}</span> <span class="hint">#${p.id}</span></td>
       <td>${p.removedAt ? `<span class="badge">former member</span><div class="hint">since ${fmtDateTime(p.removedAt)}</div>` : p.admin ? '<span class="badge good">admin</span>' : 'member'}${!p.hasPassword ? '<div class="hint">no password yet</div>' : ''}</td>
+      <td>${!p.ready ? '–' : p.ready.ready ? '<span class="badge good">ready</span>' : `<span class="badge warn">not ready</span><div class="hint">${esc(p.ready.missing.join(', '))}</div>`}</td>
       <td>${({ saved: '<span class="badge good">saved</span>', pending: '<span class="badge warn">made, not saved yet</span>', unconfirmed: '<span class="badge">made (before 1.6), not confirmed</span>' })[p.recoveryStatus] || (p.recoverySet ? '<span class="badge good">set up</span>' : '<span class="badge warn">not set up</span>')}</td>
       <td class="num">${p.sessions?.n || 0}</td>
       <td>${p.online ? '<span class="badge good">app open</span>' : p.sessions?.last ? seenAgo(p.sessions.last) : '–'}</td>
       <td>${p.removedAt || (!resetLinksOn && !resetLinks[p.id]) ? '' : resetLinks[p.id] ? `<input class="input" readonly value="${esc(resetLinks[p.id])}" style="width:260px;font-size:12px" onclick="this.select()">`
         : `<button class="btn small" data-reset-link="${p.id}">${p.resetLink ? 'New reset link' : 'Reset link'}</button>${p.resetLink ? `<div class="hint">a link is live until ${fmtTime(p.resetLink.expires_at)}</div>` : ''}`}</td></tr>`,
-    'Nobody on the trip yet', { cols: 6, key: (p) => p.id, fresh: () => false });
+    'Nobody on the trip yet', { cols: 7, key: (p) => p.id, fresh: () => false });
 }
 
 // The console's only write action: clear all expenses (typed confirmation), and undo the last clear.

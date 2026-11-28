@@ -11,6 +11,7 @@ import { createAuth, parseCookies } from './auth.js';
 import { devPush, devRecent, devSubscribe, startedAt } from './devlog.js';
 import { cleanExpense, CURRENCIES } from './money.js';
 import { createNotifier, prefsOf, cleanPrefs, NOTIFY_KINDS } from './notify.js';
+import { readiness, summary as readySummary, cleanReport } from './ready.js';
 import { imageSize } from './images.js';
 import { createPusher } from './push.js';
 import { createChat, isKlipyMedia } from './chat.js';
@@ -70,7 +71,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   // unconfirmed: made before 1.6 (no confirmation then). saved: confirmed, only the hash is kept.
   const recoveryStatus = (u) => (!u.recovery_hash ? 'none' : u.recovery_pending ? 'pending' : u.recovery_ack_at ? 'saved' : 'unconfirmed');
   const recoveryInfo = (u) => ({ status: recoveryStatus(u), set: recoveryStatus(u) === 'saved', setAt: u.recovery_set_at || null, savedAt: u.recovery_ack_at || null, snoozeUntil: u.recovery_snooze || null });
-  const pushRecovery = (id) => { const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id); for (const c of clients) if (c.user.id === id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(u) }); };
+  const pushRecovery = (id) => { const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id); for (const c of clients) if (c.user.id === id) sendTo(c, { t: 'me.recovery', recovery: recoveryInfo(u) }); readyChanged(); };
   const recoverFails = new Map(); // user id -> { n, ts }: wrong recovery codes, per account
   const clientLogCount = new Map(); // user id -> browser errors reported since start (capped)
   const helpAsked = new Map();    // user id -> time admins were last asked
@@ -225,6 +226,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       .run(result, t, result === 'stored' ? 1 : 0, t, keep && u.ot_info ? 1 : 0, JSON.stringify(info), u.id);
     const st = ownTracksStatus(db.prepare('SELECT * FROM users WHERE id = ?').get(u.id));
     for (const c of clients) if (c.user.id === u.id) sendTo(c, { t: 'owntracks.status', status: st });
+    readyChanged();
   }
 
   const publicUser = (u) => ({
@@ -234,6 +236,54 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     ...(u.removed_at ? { removed: true, removedAt: u.removed_at } : {}),
   });
   const listUsers = () => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
+
+  // ---------- Ready for Japan (TA-36): each person's setup check ----------
+  function readinessOf(u) {
+    return readiness({
+      user: u, recovery: recoveryStatus(u), now: now(),
+      devices: db.prepare('SELECT * FROM devices WHERE user_id = ? ORDER BY updated_at DESC').all(u.id),
+      subs: db.prepare('SELECT endpoint, fails, last_ok_at FROM push_subs WHERE user_id = ?').all(u.id),
+      loc: db.prepare('SELECT ts, source FROM locations WHERE user_id = ?').get(u.id) || null,
+    });
+  }
+  const readyUsers = () => db.prepare('SELECT * FROM users WHERE removed_at IS NULL ORDER BY id').all();
+  const readyList = () => readyUsers().map((u) => readySummary(readinessOf(u)));
+  function saveDevice(user, m, ua) {
+    const d = cleanReport(m);
+    if (!d) return null;
+    db.prepare(`INSERT INTO devices(user_id, device_id, installed, android, endpoint, blocked, maps, maps_at, ua, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, device_id) DO UPDATE SET installed = excluded.installed, android = excluded.android, endpoint = excluded.endpoint, blocked = excluded.blocked,
+      maps = excluded.maps, maps_at = excluded.maps_at, ua = excluded.ua, updated_at = excluded.updated_at`)
+      .run(user.id, d.id, d.installed ? 1 : 0, d.android ? 1 : 0, d.endpoint, d.blocked ? 1 : 0, d.maps, d.mapsAt, String(ua || '').slice(0, 160), now());
+    // Keep it tidy: the 10 most recent devices per person
+    db.prepare('DELETE FROM devices WHERE user_id = ? AND device_id NOT IN (SELECT device_id FROM devices WHERE user_id = ? ORDER BY updated_at DESC LIMIT 10)').run(user.id, user.id);
+    return d.id;
+  }
+  // Anything that can change someone's readiness calls this. A moment later each person gets their
+  // own check and admins get the list, but only when something actually changed.
+  const lastReady = new Map(); // user id -> JSON last sent
+  let lastReadyList = '';
+  let readyTimer = null;
+  function readyChanged() {
+    if (readyTimer) return;
+    readyTimer = setTimeout(() => { readyTimer = null; try { pushReady(); } catch (e) { console.error(e); } }, 150);
+    readyTimer.unref?.();
+  }
+  function pushReady() {
+    const list = [];
+    for (const u of readyUsers()) {
+      const r = readinessOf(u);
+      list.push(readySummary(r));
+      const json = JSON.stringify(r);
+      if (lastReady.get(u.id) === json) continue;
+      lastReady.set(u.id, json);
+      for (const c of clients) if (c.user.id === u.id) sendTo(c, `{"t":"me.ready","ready":${json}}`);
+    }
+    const json = JSON.stringify(list);
+    if (json === lastReadyList) return;
+    lastReadyList = json;
+    for (const c of clients) if (c.user.is_admin) sendTo(c, `{"t":"ready","list":${json}}`);
+  }
   const userCount = () => db.prepare('SELECT COUNT(*) n FROM users').get().n;
   const userIdSet = () => new Set(db.prepare('SELECT id FROM users').all().map((u) => u.id));
 
@@ -296,8 +346,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const admin = !!me.is_admin;
     return {
       t: 'state',
-      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me), owntracks: ownTracksStatus(me), recovery: recoveryInfo(me) },
-      ...(me.is_admin ? { expenseReset: lastExpenseReset() } : {}),
+      me: { ...publicUser(me), owntracksToken: me.owntracks_token, notifyPrefs: prefsOf(me), owntracks: ownTracksStatus(me), recovery: recoveryInfo(me), ready: readinessOf(me) },
+      ...(me.is_admin ? { expenseReset: lastExpenseReset(), ready: readyList() } : {}),
       trip: tripForClient(user),
       users: listUsers(),
       places: db.prepare(`SELECT * FROM places ${admin ? '' : 'WHERE removed_at IS NULL'}`).all().map(placeRow),
@@ -781,6 +831,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       if (p === '/api/push/subscribe' && req.method === 'POST') {
         const b = await readBody(req).catch(() => ({}));
         try { pusher.subscribe(user.id, b.subscription, req.headers['user-agent']); } catch (e) { return send(res, 400, { error: e.expose ? e.message : 'Couldn’t turn on notifications.' }); }
+        readyChanged();
         pusher.noteOrigin(`${req.headers['x-forwarded-proto'] === 'https' || TRUST_PROXY ? 'https' : 'http'}://${req.headers.host}`);
         devPush('op', { user: user.name, op: 'push.subscribe', ok: true });
         return send(res, 200, { ok: true });
@@ -788,6 +839,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
       if (p === '/api/push/unsubscribe' && req.method === 'POST') {
         const b = await readBody(req).catch(() => ({}));
         pusher.unsubscribe(user.id, b.endpoint);
+        readyChanged();
         devPush('op', { user: user.name, op: 'push.unsubscribe', ok: true });
         return send(res, 200, { ok: true });
       }
@@ -796,6 +848,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (!pusher.has(user.id, b.endpoint)) return send(res, 400, { error: 'Notifications aren’t on for this device yet.' });
         const gate = auth.gateEnabled ? `gate=${auth.gateToken}&` : '';
         const [r] = await pusher.send(user.id, { title: getTrip().name || 'Tabi', body: 'Notifications work on this device. You’ll get them here when Tabi is closed.', tag: 'test', url: `/?${gate}` }, { endpoint: b.endpoint, ttl: 300 });
+        readyChanged();
         if (!r?.ok) return send(res, 502, { error: r?.gone ? 'The browser cancelled notifications for this device. Turn them on again.' : `The push service didn’t accept it (${r?.status || r?.error || 'no answer'}).` });
         return send(res, 200, { ok: true });
       }
@@ -1227,7 +1280,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
     const gate = auth.gateEnabled ? `gate=${auth.gateToken}&` : '';
     pusher.send(userId, { title: getTrip().name || 'Tabi', body: item.text, tag: `n${item.id}`, url: `/?${gate}n=${item.id}`, unread, ts: item.ts, kind: item.kind },
       { topic: `n${item.id}`, urgency: item.kind === 'security' ? 'high' : 'normal' })
-      .then((rs) => { if (rs.length) devPush('op', { user: nameOf(userId), op: 'push.send', ok: rs.some((r) => r.ok), devices: rs.length, error: rs.find((r) => !r.ok)?.error || undefined }); })
+      .then((rs) => { if (rs.length) { devPush('op', { user: nameOf(userId), op: 'push.send', ok: rs.some((r) => r.ok), devices: rs.length, error: rs.find((r) => !r.ok)?.error || undefined }); readyChanged(); } })
       .catch(() => {});
   };
   const chat = createChat({
@@ -1245,7 +1298,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const notifyUnread = (userId) => { const n = notifier.unread(userId); for (const c of clients) if (c.user.id === userId) sendTo(c, { t: 'notif.unread', unread: n }); };
 
   function sendTo(c, msg) { if (c.ws.readyState === 1) c.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
-  function broadcast(msg) { const data = JSON.stringify(msg); for (const c of clients) sendTo(c, data); }
+  function broadcast(msg) {
+    const data = JSON.stringify(msg);
+    for (const c of clients) sendTo(c, data);
+    if (msg.t === 'users' || msg.t === 'loc') readyChanged(); // sharing, photos, people joining or leaving, new locations
+  }
   const broadcastPresence = () => broadcast({ t: 'presence', online: onlineIds() });
 
   // Removed places are only visible to admins.
@@ -1294,6 +1351,11 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         if (msg.t === 'ping') return ws.send('{"t":"pong"}');
         if (msg.t === 'vis') { client.visible = !!msg.v; return; } // is the app on screen? (decides push vs. in-app only)
         if (msg.t === 'chatview') { client.chatOpen = typeof msg.chat === 'string' ? msg.chat.slice(0, 80) : null; return; } // which chat is open (no notifications for it)
+        if (msg.t === 'device') { // Ready for Japan: this phone's own checks (home screen, notifications, offline maps)
+          const fresh = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(client.user.id);
+          if (fresh && saveDevice(fresh, msg, client.ua)) { client.deviceId = String(msg.id); readyChanged(); }
+          return;
+        }
         if (msg.t !== 'op') return;
         const fresh = db.prepare('SELECT * FROM users WHERE id = ?').get(client.user.id);
         if (!fresh) { ws.send('{"t":"kicked"}'); return ws.close(); }
@@ -1308,6 +1370,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         }
         if (msg.op !== 'loc.update') devPush('op', { user: fresh.name, op: String(msg.op).slice(0, 40), ok: result.ok !== false, error: result.error, ms: Date.now() - t0 });
         if (msg.id) ws.send(JSON.stringify({ t: 'ack', id: msg.id, ...result }));
+        if (msg.op !== 'loc.update') readyChanged();
       });
       ws.on('close', () => { clients.delete(client); broadcastPresence(); devPush('ws', { user: client.user.name, event: 'disconnected', ip: client.ip, seconds: Math.round((Date.now() - client.since) / 1000) }); });
     });
@@ -1344,6 +1407,8 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   const upkeepFirst = setTimeout(runUpkeep, +env.STORAGE_UPKEEP_FIRST_MS || 60e3);
   const upkeepTimer = setInterval(runUpkeep, STORAGE_EVERY);
   const reminderTimer = setInterval(() => { try { photoReminder(); } catch (e) { console.error(e); } }, +env.PHOTO_REMINDER_EVERY_MS || 5 * 60e3);
+  const readyTimerAll = setInterval(readyChanged, 5 * 60e3);
+  readyTimerAll.unref();
   purge.unref();
 
   // ---------- operations ----------
@@ -1900,6 +1965,20 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         return { ok: true, ...r };
       }
 
+      // ---- Ready for Japan (admins) ----
+      case 'ready.nudge': {
+        requireAdmin();
+        const target = db.prepare('SELECT * FROM users WHERE id = ? AND removed_at IS NULL').get(+d.id);
+        if (!target) fail('Choose someone on the trip.');
+        if (target.id === user.id) fail('That’s you. Your own list is at the top of Settings.');
+        const r = readinessOf(target);
+        if (r.ready) fail(`${target.name} is already ready.`);
+        // Only to that person. Asking again within 15 minutes updates the same notification.
+        notifier.notify([{ userId: target.id, kinds: ['setup'], text: `${user.name} asked you to finish getting ready for Japan: ${r.missing.join(', ')}. Tap to see what’s left.` }],
+          { actorId: user.id, ref: { type: 'setup', id: target.id } });
+        return { ok: true };
+      }
+
       // ---- notifications ----
       case 'notif.read': {
         const n = notifier.markRead(user.id, Array.isArray(d.ids) ? d.ids : undefined);
@@ -2112,6 +2191,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
         sessions: db.prepare('SELECT COUNT(*) n, MAX(last_seen) last FROM sessions WHERE user_id = ?').get(u.id),
         online: [...clients].some((c) => c.user.id === u.id),
         groups: listSubgroups().filter((g) => g.memberIds.includes(u.id)).map((g) => g.name),
+        ready: u.removed_at ? null : readySummary(readinessOf(u)),
       })) });
     }
     if (p === '/api/dev/places') {
@@ -2127,7 +2207,7 @@ export function createApp({ db, blobs, root, dataDir = '', env = process.env, ge
   return {
     server,
     userCount,
-    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); clearInterval(reminderTimer); clearTimeout(upkeepFirst); clearInterval(upkeepTimer); blobs.flushReads?.(); return new Promise((r) => server.close(r)); },
+    close() { for (const c of clients) c.ws.terminate(); clearInterval(heartbeat); clearInterval(purge); clearInterval(reminderTimer); clearInterval(readyTimerAll); clearTimeout(readyTimer); clearTimeout(upkeepFirst); clearInterval(upkeepTimer); blobs.flushReads?.(); return new Promise((r) => server.close(r)); },
     photoReminder, // for tests
   };
 }

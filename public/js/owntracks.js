@@ -3,7 +3,7 @@ import { esc, ago } from './ui.js';
 
 const HOUR = 3600e3;
 // "just now", "3 minutes ago", "2 hours ago": these read as sentences, unlike the compact list format
-function when(ts, now = Date.now()) {
+export function when(ts, now = Date.now()) {
   const a = ago(ts);
   if (a === 'now') return 'just now';
   const m = /^(\d+)([mhd]) ago$/.exec(a);

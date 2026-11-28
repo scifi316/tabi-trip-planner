@@ -3,8 +3,8 @@
 // whether this phone or computer also gets them on the lock screen.
 import { esc, icon, toast } from './ui.js';
 
-const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+export const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
 // What this device can do: 'ok' | 'ios-install' (iPhone, not opened from the Home Screen) | 'old-ios' | 'unsupported' | 'insecure'
 export function support() {
@@ -53,12 +53,14 @@ export async function turnOn() {
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
   await post('/api/push/subscribe', { subscription: sub.toJSON() });
   localStorage.setItem('tabi.push.asked', 'on');
+  dispatchEvent(new Event('tabi:push')); // the Ready for Japan check reports this phone again
 }
 export async function turnOff() {
   const reg = await registration();
   const sub = await reg.pushManager.getSubscription();
   if (sub) { await post('/api/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
   localStorage.setItem('tabi.push.asked', 'off');
+  dispatchEvent(new Event('tabi:push'));
 }
 export async function sendTest() {
   const reg = await registration();
@@ -74,7 +76,7 @@ export function pushBlockHtml() {
       <label class="switch"><input type="checkbox" data-push-toggle disabled aria-label="Notifications on this device when Tabi is closed"><span></span></label></div>
     <div class="row push-test" data-push-test-row hidden><div class="grow help">Notifications are on for this device.</div><button class="btn small" data-push-test>Send a test</button></div>`;
 }
-const HELP = {
+export const HELP = {
   'ios-install': 'On iPhone this needs Tabi on your Home Screen: in Safari tap Share › Add to Home Screen, open Tabi from there, then turn this on.',
   'old-ios': 'Needs iOS 16.4 or newer, with Tabi added to the Home Screen.',
   unsupported: 'This browser can’t show notifications when Tabi is closed.',

@@ -60,6 +60,25 @@ async function styleAssets() {
   return { assets: [...assets], templates };
 }
 
+// The places "Save maps around all places" covers
+const packPlaces = () => [...state.places.values()].filter((p) => p.status !== 'vetoed');
+// Where each one is, to about 100 m: a place added or moved further than that needs saving again
+const spot = (p) => `${(+p.lat).toFixed(3)},${(+p.lng).toFixed(3)}`;
+const PACK_KEY = 'tabi.maps.pack';
+
+// Ready for Japan (TA-36): has the places pack run on this device since the places last changed?
+// Remembered when a run finishes with nothing left to fetch. 'fresh' | 'stale' | 'none'
+export function noteStopsPackDone() {
+  try { localStorage.setItem(PACK_KEY, JSON.stringify({ at: Date.now(), spots: [...new Set(packPlaces().map(spot))] })); } catch { /* storage full or private mode */ }
+}
+export function stopsPackState() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(PACK_KEY) || 'null'); } catch { /* ignore */ }
+  if (!saved?.at || !Array.isArray(saved.spots)) return { state: 'none', at: null };
+  const have = new Set(saved.spots);
+  return { state: packPlaces().every((p) => have.has(spot(p))) ? 'fresh' : 'stale', at: saved.at };
+}
+
 // pack: 'stops' (overview of Japan + neighbourhood of every place) or 'view' (current map area)
 export async function planPack(kind, { bounds, zoom } = {}) {
   const { assets, templates } = await styleAssets();
@@ -67,7 +86,7 @@ export async function planPack(kind, { bounds, zoom } = {}) {
   const add = (list) => list.forEach((k) => keys.add(k));
   if (kind === 'stops') {
     for (let z = 0; z <= 7; z++) add(tilesInBox(JAPAN, z));
-    const places = [...state.places.values()].filter((p) => p.status !== 'vetoed')
+    const places = packPlaces()
       .sort((a, b) => (b.day ? 1 : 0) - (a.day ? 1 : 0) || (a.status === 'confirmed' ? -1 : 1));
     for (const p of places) {
       for (let z = 8; z <= 11; z++) add(tilesInBox(around(p, 4), z));
@@ -117,4 +136,4 @@ export async function mapCacheInfo() {
   const est = await navigator.storage?.estimate?.();
   return { entries: n, usage: est?.usage || 0, quota: est?.quota || 0 };
 }
-export async function clearMapCache() { await caches.delete(MAP_CACHE); }
+export async function clearMapCache() { await caches.delete(MAP_CACHE); try { localStorage.removeItem(PACK_KEY); } catch { /* ignore */ } }
