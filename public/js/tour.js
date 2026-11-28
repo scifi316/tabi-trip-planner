@@ -10,7 +10,7 @@ const TOURS = {
     { sel: '#friend-row', title: 'Friends and subgroups', text: 'Tap Friends to find someone on the map, see their plan for the day, or settle up with them. Tap “Split up” when the group heads off in different directions.' },
     { sel: '#line-strip', title: 'The day’s line', text: 'Each circle is a confirmed stop, in order, like stations on a train line. Filled circles are done and the pulsing one is next. Use the arrows to look at other days.' },
     { sel: '#fab-add', title: 'Add places', text: 'Import your Google My Maps, paste a bunch of links, or search.' },
-    { sel: '#tabbar', title: 'Get around', text: 'Switch between the map, the itinerary, the group chat, money and settings. The arrow hides this bar when you want more map.' },
+    { sel: '#tabbar', title: 'Get around', text: 'Switch between the map, the itinerary, the group chat, money and settings.' },
   ],
   itinerary: [
     { sel: '#screen-itinerary .days', title: 'Pick a day', text: 'Every day of the trip, with how many places are planned. “Unscheduled” holds ideas without a day yet.' },

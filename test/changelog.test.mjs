@@ -89,6 +89,14 @@ test('Settings: the last 3 releases are open, older ones folded under Earlier up
   assert.ok(changelogHtml([{ version: '1.0.0', date: '2026-01-01', changes: ['<img src=x onerror=alert(1)>'] }]).includes('&lt;img'), 'text is escaped');
 });
 
+test('a release can carry a tag like "Pre 1.9", shown beside its version and escaped', () => {
+  const html = changelogHtml([{ version: '1.8.11', date: '2026-11-23', tag: 'Pre 1.9', changes: ['x'] }, { version: '1.8.10', date: '2026-11-20', changes: ['y'] }]);
+  assert.match(html, /<span class="label">Tabi 1\.8\.11 <span class="release-tag">Pre 1\.9<\/span><\/span>/);
+  assert.match(html, /<span class="label">Tabi 1\.8\.10<\/span>/, 'no tag, no badge');
+  assert.ok(changelogHtml([{ version: '1.0.0', date: '2026-01-01', tag: '<b>', changes: ['x'] }]).includes('&lt;b&gt;'), 'tag is escaped');
+  for (const r of CHANGELOG.releases) if ('tag' in r) assert.ok(typeof r.tag === 'string' && r.tag.trim() && r.tag.length <= 20, `${r.version}: a short tag`);
+});
+
 test('release dates read the same in every time zone', () => {
   assert.equal(formatReleaseDate('2026-11-20'), 'Nov 20, 2026');
   assert.equal(formatReleaseDate('2026-13-40'), '');

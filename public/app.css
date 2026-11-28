@@ -16,7 +16,11 @@
   --r-s: 8px;
   --r-m: 14px;
   --r-l: 22px;
-  --tab-h: 62px;
+  --tab-h: 64px;
+  /* what the bottom navigation bar takes from the bottom of the screen, and the safe area left below content when
+     there's no bar under it (a rail instead, or the keyboard is up) */
+  --bar-b: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+  --bar-safe: 0px;
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-l: env(safe-area-inset-left, 0px);
@@ -98,7 +102,6 @@ button { cursor: pointer; }
 .screens { position: relative; flex: 1; min-height: 0; }
 .screen { position: absolute; inset: 0; }
 .screen-page { overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--tab-h) + var(--safe-b) + 24px); }
-.app.nav-collapsed .screen-page { padding-bottom: calc(var(--safe-b) + 72px); }
 
 /* ---------- map screen ---------- */
 .map { position: absolute; inset: 0; background: var(--surface-2); }
@@ -182,13 +185,10 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
   transition: bottom .3s var(--ease);
 }
 .fab .i { width: 26px; height: 26px; stroke-width: 2.2; }
-.app.nav-collapsed .fab { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 64px); }
 
 /* maplibre chrome */
 .maplibregl-ctrl-attrib { font-size: 10px; }
 .maplibregl-ctrl-bottom-left, .maplibregl-ctrl-bottom-right { bottom: calc(var(--tab-h) + var(--safe-b) + var(--strip-h, 0px) + 4px); transition: bottom .3s var(--ease); }
-.app.nav-collapsed .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 54px); }
-.app.nav-collapsed .maplibregl-ctrl-bottom-left { left: 0; }
 /* The map credit sits bottom-left, away from the Add button; when opened it never runs under the button. */
 .maplibregl-ctrl-bottom-left .maplibregl-ctrl-attrib.maplibregl-compact-show { max-width: calc(100vw - 110px); }
 [data-theme="dark"] .maplibregl-ctrl-attrib { background: rgba(29, 33, 40, .8); color: var(--ink-2); }
@@ -274,7 +274,6 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
   background: var(--surface); border-radius: var(--r-l); box-shadow: var(--shadow);
   padding: 10px 6px 12px; transition: bottom .3s var(--ease);
 }
-.app.nav-collapsed .line-strip { bottom: calc(var(--safe-b) + 58px); }
 .strip-head { display: flex; align-items: center; gap: 2px; padding: 0 4px; }
 .strip-day { flex: 1; min-width: 0; text-align: left; border: 0; background: none; padding: 2px 4px; }
 /* "Today" and "Day 4" sit on one line when there's room, and "Day 4" moves under it as a whole when there isn't,
@@ -309,41 +308,50 @@ input[type="search"].input::-webkit-search-decoration { -webkit-appearance: none
 .strip-empty { padding: 8px 8px 0; font-size: 13.5px; color: var(--ink-2); }
 .strip-empty button { border: 0; background: none; color: var(--accent); font-weight: 600; padding: 0; }
 
-/* ---------- tab bar ---------- */
+/* ---------- navigation bar ----------
+   1.9: permanent, like Google Maps'. Always on screen and never hidden by a button: along the bottom on phones held
+   upright, a rail down the left on phones held sideways and on computers (both further down). The current screen
+   gets a filled pill behind its icon. Cards (.sheet.peek) dock above the bar instead of covering it, and the bar
+   only steps aside while the on-screen keyboard is up (html.kb-open, set by navbar.js). */
 .tabbar {
-  position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + var(--safe-b)); padding-bottom: var(--safe-b);
+  position: fixed; z-index: 20; left: 0; right: 0; bottom: 0; height: calc(var(--tab-h) + var(--safe-b));
+  padding: 0 var(--safe-r) var(--safe-b) var(--safe-l);
   display: flex; background: var(--surface); border-top: 1px solid var(--line);
-  transition: transform .3s var(--ease);
+  transition: transform .2s var(--ease), visibility .2s;
 }
-.app.nav-collapsed .tabbar { transform: translateY(110%); }
 .tab {
-  flex: 1; border: 0; background: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  color: var(--ink-3); font-size: 11.5px; font-weight: 600; position: relative;
+  flex: 1 1 0; min-width: 0; border: 0; background: none; padding: 0 2px; position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  color: var(--ink-2); font-size: 12px; font-weight: 600; line-height: 1.2;
 }
+.tab-ico { display: grid; place-items: center; width: 56px; max-width: 100%; height: 30px; border-radius: 15px; transition: background-color .2s var(--ease); }
 .tab .i { width: 24px; height: 24px; }
-.tab[aria-current="page"] { color: var(--accent); }
-.tab[aria-current="page"]::before { content: ""; position: absolute; top: 0; left: 30%; right: 30%; height: 3px; border-radius: 0 0 3px 3px; background: var(--accent); }
-.tab.collapse { flex: 0 0 52px; }
-.nav-handle {
-  position: fixed; z-index: 20; left: 50%; transform: translateX(-50%); bottom: calc(var(--safe-b) + 10px);
-  display: flex; align-items: center; gap: 2px; height: 40px; padding: 0 12px 0 14px; border-radius: 20px; border: 0;
-  background: var(--surface); color: var(--accent); box-shadow: var(--shadow-lift);
+/* Bigger text settings make the labels wider, not the bar: a label that no longer fits is cut with … */
+.tab-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab[aria-current="page"] { color: var(--ink); font-weight: 700; }
+.tab[aria-current="page"] .tab-ico { background: var(--accent-soft); color: var(--accent); }
+.tab:active .tab-ico { background: var(--surface-2); }
+.tab[aria-current="page"]:active .tab-ico { background: var(--accent-soft); }
+/* Phones are the narrowest case. On a wider screen held upright (a tablet, a big phone in split screen) the five
+   tabs stay a comfortable width in the middle instead of stretching across it. */
+@media (min-width: 600px) {
+  .tabbar { justify-content: center; }
+  .tab { flex: 0 1 120px; }
 }
+/* While typing on a phone the keyboard takes the bottom of the screen: the bar slides away and everything that
+   sat above it (pages, the chat box, cards) drops to the bottom, then comes back when the keyboard closes. */
+html.kb-open { --tab-h: 0px; --bar-b: 0px; --bar-safe: var(--safe-b); }
+html.kb-open .tabbar { transform: translateY(100%); visibility: hidden; }
 
 @media (min-width: 900px) {
-  :root { --tab-h: 0px; }
+  :root { --tab-h: 0px; --bar-b: 0px; --bar-safe: var(--safe-b); }
+  html.kb-open .tabbar { transform: none; visibility: visible; } /* a rail stays put while typing */
   .tabbar { top: 0; right: auto; width: 84px; height: auto; flex-direction: column; justify-content: flex-start; padding: calc(var(--safe-t) + 74px) 0 0; border-top: 0; border-right: 1px solid var(--line); }
   .tab { flex: 0 0 72px; }
-  .tab[aria-current="page"]::before { top: 22%; bottom: 22%; left: 0; right: auto; width: 3px; height: auto; border-radius: 0 3px 3px 0; }
-  .tab.collapse { margin-top: auto; flex: 0 0 64px; transform: rotate(90deg); }
   .app { padding-left: 84px; transition: padding .3s var(--ease); }
-  .app.nav-collapsed { padding-left: 0; }
-  .app.nav-collapsed .tabbar { transform: translateX(-110%); }
-  .nav-handle { left: 12px; transform: none; }
   .line-strip { left: auto; width: 520px; right: 74px; }
   /* On wide screens the day strip is on the right, so the credit can sit in the bottom-left corner */
-  .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + 6px); }
-  .app.nav-collapsed .maplibregl-ctrl-bottom-left { left: 100px; } /* clear of the "show navigation" pill */
+  .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + 6px); }
   .search-results, .map-top { max-width: 560px; }
   .screen-page > .page { max-width: 760px; margin: 0 auto; }
 }
@@ -489,6 +497,9 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.4; }
 /* TA-18: while a finger pulls the sheet it follows exactly; let go and it eases back (or slides away) */
 .sheet.dragging { transition: none; user-select: none; -webkit-user-select: none; }
 .sheet.peek { z-index: 30; }
+/* 1.9: a card (place, friend, stay...) docks above the navigation bar instead of covering it, as in Google Maps, so
+   you can switch screens with it open. Sheets that ask for something (with the dimmed background) still cover it. */
+.sheet.peek { bottom: var(--bar-b); padding-bottom: var(--bar-safe); max-height: calc(88dvh - var(--bar-b)); }
 .sheet:focus { outline: none; }
 @keyframes rise { from { transform: translateY(100%); } }
 .sheet.closing { transform: translateY(100%); transition: transform .2s ease-in; }
@@ -506,7 +517,7 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.4; }
 .sheet-foot .btn { flex: 1; }
 @media (min-width: 900px) {
   .sheet { left: auto; right: 16px; bottom: 16px; width: 440px; border-radius: var(--r-l); max-height: calc(100dvh - 32px); }
-  .sheet.peek { left: 100px; right: auto; }
+  .sheet.peek { left: 100px; right: auto; bottom: 16px; padding-bottom: var(--safe-b); max-height: calc(100dvh - 32px); }
 }
 
 .status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; padding: 3px 10px 3px 8px; border-radius: 12px; background: color-mix(in srgb, var(--sw) 15%, transparent); color: var(--sw); }
@@ -763,9 +774,9 @@ label.btn { cursor: pointer; }
 
 /* the rail button and the page (computers) */
 .tab-notifs { display: none !important; }
-.tab-notifs > span:not(.tab-badge) { font-size: 10.5px; letter-spacing: -.01em; }
+.tab-notifs > .tab-label { font-size: 10.5px; letter-spacing: -.01em; }
 .tab-badge {
-  position: absolute; top: 10px; left: calc(50% + 4px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+  position: absolute; top: 3px; left: calc(50% + 6px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
   background: var(--c-missed); color: #fff; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
   box-shadow: 0 0 0 2px var(--surface);
 }
@@ -783,8 +794,7 @@ label.btn { cursor: pointer; }
   .tab-notifs { display: flex !important; }
   /* the account sheet opens next to the avatar you clicked, not in the far corner */
   .sheet.account-sheet { left: 100px; right: auto; top: calc(var(--safe-t) + 12px); bottom: auto; width: 400px; max-height: calc(100dvh - 24px); animation: drop .22s var(--ease); }
-  .app.nav-collapsed ~ #sheet-root .sheet.account-sheet { left: 16px; }
-  .sheet.account-sheet.closing { transform: translateY(-8px); opacity: 0; transition: transform .16s ease-in, opacity .16s; }
+    .sheet.account-sheet.closing { transform: translateY(-8px); opacity: 0; transition: transform .16s ease-in, opacity .16s; }
 }
 
 /* recovery reminder at the top of Settings */
@@ -1001,31 +1011,26 @@ label.btn { cursor: pointer; }
    top, and cards dock beside the map instead of rising over it. Comes last so it also wins over the
    wide-screen rules (a big phone sideways is over 900px wide). */
 @media (orientation: landscape) and (max-height: 520px) {
-  :root { --tab-h: 0px; --rail-w: calc(60px + var(--safe-l)); --top-w: min(330px, 40vw); }
+  :root { --tab-h: 0px; --bar-b: 0px; --bar-safe: var(--safe-b); --rail-w: calc(60px + var(--safe-l)); --top-w: min(330px, 40vw); }
+  html.kb-open .tabbar { transform: none; visibility: visible; }
   .tabbar {
     top: 0; bottom: 0; right: auto; width: var(--rail-w); height: auto; flex-direction: column; justify-content: flex-start;
     padding: calc(var(--safe-t) + 8px) 0 calc(var(--safe-b) + 4px) var(--safe-l); border-top: 0; border-right: 1px solid var(--line);
   }
   .tab { flex: 0 0 54px; gap: 2px; font-size: 10px; }
+  .tab-ico { width: 46px; height: 28px; border-radius: 14px; }
   .tab .i { width: 22px; height: 22px; }
-  .tab[aria-current="page"]::before { top: 20%; bottom: 20%; left: 0; right: auto; width: 3px; height: auto; border-radius: 0 3px 3px 0; }
-  .tab.collapse { margin-top: auto; flex: 0 0 44px; transform: rotate(90deg); }
   .tab[data-tab="notifications"] { display: none; }
   .app { padding-left: var(--rail-w); transition: padding .3s var(--ease); }
-  .app.nav-collapsed { padding-left: 0; }
-  .app.nav-collapsed .tabbar { transform: translateX(-110%); }
-  .nav-handle { left: calc(var(--safe-l) + 8px); transform: none; bottom: calc(var(--safe-b) + 8px); height: 36px; }
 
   /* the map: one row along the top */
   .map-top { top: calc(var(--safe-t) + 8px); left: 8px; right: auto; width: var(--top-w); max-width: none; gap: 6px; }
-  .app.nav-collapsed .map-top { left: calc(var(--safe-l) + 8px); }
   .me-btn { width: 40px; height: 40px; }
   .me-btn .avatar { width: 32px; height: 32px; font-size: 13px; }
   .search { height: 40px; }
   .search input { height: 38px; }
   .search-results { top: calc(var(--safe-t) + 54px); left: 8px; right: auto; width: min(420px, 60vw); max-width: none; max-height: calc(100dvh - var(--safe-t) - 66px); }
   .friend-row { top: calc(var(--safe-t) + 5px); left: calc(var(--top-w) + 12px); right: calc(var(--safe-r) + 58px); padding: 4px 4px 8px; }
-  .app.nav-collapsed .friend-row { left: calc(var(--top-w) + var(--safe-l) + 12px); }
   .friend-chip { height: 32px; }
   .map-controls { top: calc(var(--safe-t) + 8px); right: calc(var(--safe-r) + 8px); }
   .ctl { width: 40px; height: 40px; }
@@ -1033,13 +1038,11 @@ label.btn { cursor: pointer; }
   .follow-chip { top: calc(var(--safe-t) + 54px); left: auto; right: calc(var(--safe-r) + 56px); translate: none; }
   .fab { right: calc(var(--safe-r) + 10px); bottom: calc(var(--safe-b) + 10px); width: 46px; height: 46px; border-radius: 15px; }
   .fab .i { width: 22px; height: 22px; }
-  .app.nav-collapsed .fab { bottom: calc(var(--safe-b) + 10px); }
   .line-strip { left: 8px; right: auto; width: min(460px, 56vw); bottom: calc(var(--safe-b) + 8px); padding: 6px 4px 8px; }
-  .app.nav-collapsed .line-strip { left: calc(var(--safe-l) + 130px); bottom: calc(var(--safe-b) + 8px); width: min(460px, calc(100vw - 210px)); }
   .rail { margin-top: 4px; height: 34px; }
   .strip-empty { padding-top: 4px; }
-  .maplibregl-ctrl-bottom-left, .app.nav-collapsed .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 4px); }
-  .maplibregl-ctrl-bottom-right, .app.nav-collapsed .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-b) + 60px); right: var(--safe-r); }
+  .maplibregl-ctrl-bottom-left { bottom: calc(var(--safe-b) + var(--strip-h, 0px) + 4px); }
+  .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-b) + 60px); right: var(--safe-r); }
 
   /* cards dock beside the map: a friend or place card on the left under the top row (so the
      controls stay usable), anything else as a panel on the right */
@@ -1048,10 +1051,9 @@ label.btn { cursor: pointer; }
     max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 16px); border-radius: var(--r-l); padding-bottom: 0;
   }
   .sheet.peek {
-    left: calc(var(--rail-w) + 8px); right: auto; top: calc(var(--safe-t) + 54px); bottom: auto; width: min(380px, 46vw);
+    left: calc(var(--rail-w) + 8px); right: auto; top: calc(var(--safe-t) + 54px); bottom: auto; width: min(380px, 46vw); padding-bottom: 0;
     max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 62px);
   }
-  .app.nav-collapsed ~ #sheet-root .sheet.peek { left: calc(var(--safe-l) + 8px); }
   .sheet.tall, .sheet.friend-sheet { max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 16px); }
   .sheet.peek.friend-sheet, .sheet.peek.tall { max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 62px); }
   .sheet-grab { height: 10px; }
@@ -1214,9 +1216,12 @@ button.emoji-cell:hover { background: var(--surface-3); }
 /* ---------- chat ----------
    Each chat wears its line colour as a station roundel: indigo for Everyone, a subgroup's own colour
    for its chat. The same colour runs under the conversation header. Bubbles stay quiet. */
-.screen-chat { bottom: calc(var(--tab-h) + var(--safe-b)); }
-.app.nav-collapsed .screen-chat, .app.chat-convo .screen-chat { bottom: 0; }
-.app.chat-convo .tabbar, .app.chat-convo .nav-handle { display: none; }
+.screen-chat { bottom: var(--bar-b); }
+/* 1.9: like messaging apps, an open conversation on a phone hides the bar and the chat box sits at the bottom;
+   the back arrow returns to the chat list, where the bar shows again. chat.js sets .chat-convo only below the
+   wide-screen layout, so computers and tablets keep the rail. */
+.app.chat-convo { --tab-h: 0px; --bar-b: 0px; --bar-safe: var(--safe-b); }
+.app.chat-convo .tabbar { display: none; }
 .chat-wrap { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr); }
 .chat-wrap[data-open="0"] .convo, .chat-wrap[data-open="1"] .chat-side, .convo-empty { display: none; }
 .chat-side { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; padding-top: calc(var(--safe-t) + 10px); background: var(--bg); }
@@ -1345,7 +1350,7 @@ button.emoji-cell:hover { background: var(--surface-3); }
   position: absolute; right: 14px; bottom: calc(var(--composer-h, 64px) + 12px); z-index: 3; display: inline-flex; align-items: center; gap: 6px;
   height: 36px; padding: 0 14px; border-radius: 18px; border: 0; background: var(--surface); color: var(--accent); font-weight: 700; font-size: 13px; box-shadow: var(--shadow-lift);
 }
-.composer { position: relative; padding: 8px 8px calc(8px + var(--safe-b)); background: var(--surface); border-top: 1px solid var(--line); }
+.composer { position: relative; padding: 8px 8px calc(8px + var(--bar-safe)); background: var(--surface); border-top: 1px solid var(--line); }
 .composer-row { display: flex; align-items: flex-end; gap: 4px; }
 .comp-btn { width: 40px; height: 40px; flex: none; }
 .gif-btn { font-size: 12px; font-weight: 800; letter-spacing: .03em; }
@@ -1434,6 +1439,7 @@ a.btn { text-decoration: none; }
 .changelog .release > summary::-webkit-details-marker { display: none; }
 .changelog .release > summary .label { font-weight: 600; flex: 1; }
 .changelog .release > summary .help { font-size: 13px; color: var(--ink-2); }
+.changelog .release-tag { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; vertical-align: 1px; }
 .changelog .release > summary::after { content: ''; width: 8px; height: 8px; border: solid var(--ink-3); border-width: 0 2px 2px 0; transform: translateY(-2px) rotate(45deg); transition: transform .2s var(--ease); align-self: center; }
 .changelog .release[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
 .changelog .release ul { margin: -4px 0 0; padding: 0 16px 12px 32px; color: var(--ink); font-size: 14px; line-height: 1.45; }
