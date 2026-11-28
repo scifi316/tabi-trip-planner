@@ -30,7 +30,7 @@ A private, self-hosted web app for a group of friends travelling together: a sha
   - Up to 100 per trip. Whoever added one, or an admin, can remove it.
 - [x] **Clusters**: as you zoom out, nearby places group into one marker with a count and a ring split by status colour. Tapping one zooms to fit everything in it. If they're all at the same spot, it lists them instead. The place you have open always stays visible, and the day's numbered stops stay separate until you zoom out past city level.
 - [x] Markers stay pinned to their spot while you zoom and pan.
-- [x] **Follow mode**: tap the locate button twice, or tap your blue dot, and the map keeps you centred as you move. Tap a friend on the map, or *Follow* on their card, to keep them centred. Dragging the map or *Stop* ends it.
+- [x] **Follow mode**: tap the locate button twice, or tap your own picture on the map, and the map keeps you centred as you move. Tap a friend on the map, or *Follow* on their card, to keep them centred. Dragging the map or *Stop* ends it.
 - [x] **Show everyone** map button fits everyone who's sharing their location, alongside *fit all places*. Fitting, flying to a place and pinpointing a friend all leave room for whatever card or panel is open: at the bottom on phones, at the side on computers.
 - [x] Tooltips on icon buttons, shown with a mouse or keyboard only (never for touch). They also work on laptops with a touchscreen, which hid them before 1.6.
 - [x] **Phones held sideways**: navigation becomes a slim rail on the left, search, friends and the map buttons share one row along the top, and cards dock beside the map instead of covering it.
