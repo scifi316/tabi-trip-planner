@@ -66,18 +66,16 @@
       <section id="screen-notifications" class="screen screen-page" aria-label="Notifications" hidden></section>
     </main>
 
+    <!-- 1.9: the navigation is always there, like Google Maps': a bar along the bottom on phones held upright, a rail
+         down the side on phones held sideways and on computers. It only steps aside while the keyboard is up (navbar.js). -->
     <nav id="tabbar" class="tabbar" aria-label="Screens">
-      <button class="tab" data-tab="map"><svg class="i"><use href="#i-map"/></svg><span>Map</span></button>
-      <button class="tab" data-tab="itinerary"><svg class="i"><use href="#i-calendar"/></svg><span>Itinerary</span></button>
-      <button class="tab tab-chat" data-tab="chat"><svg class="i"><use href="#i-chat"/></svg><span>Chat</span><span class="tab-badge" data-chat-count hidden></span></button>
-      <button class="tab" data-tab="money"><svg class="i"><use href="#i-yen"/></svg><span>Money</span></button>
-      <button class="tab" data-tab="settings"><svg class="i"><use href="#i-settings"/></svg><span>Settings</span></button>
-      <button class="tab tab-notifs" data-tab="notifications" data-tip="Notifications: everything that changed for you"><svg class="i"><use href="#i-bell"/></svg><span>Notifications</span><span class="tab-badge" data-notif-count hidden></span></button>
-      <button class="tab collapse" id="nav-collapse" aria-label="Hide navigation" data-tip="Hide the navigation bar for more map"><svg class="i"><use href="#i-chevron-down"/></svg></button>
+      <button class="tab" data-tab="map"><span class="tab-ico"><svg class="i"><use href="#i-map"/></svg></span><span class="tab-label">Map</span></button>
+      <button class="tab" data-tab="itinerary"><span class="tab-ico"><svg class="i"><use href="#i-calendar"/></svg></span><span class="tab-label">Itinerary</span></button>
+      <button class="tab tab-chat" data-tab="chat"><span class="tab-ico"><svg class="i"><use href="#i-chat"/></svg></span><span class="tab-label">Chat</span><span class="tab-badge" data-chat-count hidden></span></button>
+      <button class="tab" data-tab="money"><span class="tab-ico"><svg class="i"><use href="#i-yen"/></svg></span><span class="tab-label">Money</span></button>
+      <button class="tab" data-tab="settings"><span class="tab-ico"><svg class="i"><use href="#i-settings"/></svg></span><span class="tab-label">Settings</span></button>
+      <button class="tab tab-notifs" data-tab="notifications" data-tip="Notifications: everything that changed for you"><span class="tab-ico"><svg class="i"><use href="#i-bell"/></svg></span><span class="tab-label">Notifications</span><span class="tab-badge" data-notif-count hidden></span></button>
     </nav>
-    <button id="nav-handle" class="nav-handle" aria-label="Show navigation" data-tip="Show the navigation bar" hidden>
-      <svg class="i"><use href="#i-map"/></svg><svg class="i small"><use href="#i-chevron-up"/></svg>
-    </button>
   </div>
 
   <div id="sheet-root"></div>

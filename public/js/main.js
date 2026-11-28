@@ -11,6 +11,7 @@ import { forgotScreen, resetScreen, maybePromptRecovery } from './account.js';
 import './tooltip.js';
 import { rememberApp } from './android.js';
 import { lockZoom, resetZoom } from './zoomlock.js';
+import { initNavbar } from './navbar.js';
 import { announceUpdate, offerUpdate } from './whatsnew.js';
 
 lockZoom(); // TA-15: the page never pinch-zooms on a phone; the map still does
@@ -131,7 +132,6 @@ async function go(tab) {
   current = tab;
   for (const s of ['map', 'itinerary', 'chat', 'money', 'settings', 'notifications']) $(`#screen-${s}`).hidden = s !== tab;
   $$('.tab[data-tab]').forEach((b) => (b.dataset.tab === tab ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
-  $('#nav-handle').querySelector('use').setAttribute('href', `#i-${{ map: 'map', itinerary: 'calendar', chat: 'chat', money: 'yen', settings: 'settings', notifications: 'bell' }[tab]}`);
   if (tab === 'map') (await loaded.map).resizeMap();
   if (tab === 'itinerary') (await loaded.itin).showItinerary();
   if (tab === 'money') (await loaded.money).showMoney();
@@ -145,13 +145,6 @@ async function go(tab) {
 }
 export const currentTab = () => current;
 on('go', go);
-
-function setNavCollapsed(c) {
-  $('#app').classList.toggle('nav-collapsed', c);
-  $('#nav-handle').hidden = !c;
-  localStorage.setItem('tabi.nav', c ? 'collapsed' : 'open');
-  setTimeout(() => loaded.map?.then((m) => m.resizeMap()), 320);
-}
 
 // The red count on the Chat tab: unread messages across your chats.
 function refreshChatBadge() {
@@ -240,9 +233,9 @@ async function startApp() {
   on('theme', () => m.setMapStyle());
 
   $$('.tab[data-tab]').forEach((b) => b.onclick = () => go(b.dataset.tab));
-  $('#nav-collapse').onclick = () => setNavCollapsed(true);
-  $('#nav-handle').onclick = () => setNavCollapsed(false);
-  if (localStorage.getItem('tabi.nav') === 'collapsed') setNavCollapsed(true);
+  // 1.9: the bar can't be hidden any more, so forget whether it was (see navbar.js)
+  try { localStorage.removeItem('tabi.nav'); } catch { /* storage blocked */ }
+  initNavbar();
 
   on('conn', refreshMeButtons);
   on('users', refreshMeButtons);
